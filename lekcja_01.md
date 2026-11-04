@@ -28,8 +28,8 @@ Jeśli projekt już istnieje, kontynuuj go zamiast tworzyć nowy.
 Nie nadpisuj moich plików. W PowerShell używaj npm.cmd i npx.cmd,
 jeśli uruchamianie plików .ps1 jest blokowane.
 
-Na stronie pokaż „Mój chatbot”, puste miejsce na rozmowę,
-pole wiadomości i przycisk „Wyślij”. Na razie bez odpowiedzi AI.
+Na stronie pokaż „Jestem MAX, od AM”, puste miejsce na rozmowę,
+pole wiadomości i przycisk „Ślij”. Na razie bez odpowiedzi AI.
 Zainstaluj potrzebne zależności, uruchom stronę i podaj dokładny adres.
 Zatrzymaj się po tym kroku.
 ```
