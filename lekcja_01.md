@@ -34,6 +34,12 @@ Zainstaluj potrzebne zależności, uruchom stronę i podaj dokładny adres.
 Zatrzymaj się po tym kroku.
 ```
 
+zmien stronę na mocny dark, daj animowane szkielety i czaszki
+
+npm install && npm run dev -- --port 3000
+
+http://localhost:3000/
+
 **Ty:** otwórz adres wypisany w terminalu, np. localhost:3000. Jeśli podaje inny port, otwórz właśnie ten adres.
 
 **Sprawdź:** widzisz tytuł, pole wiadomości i przycisk. Na tym etapie czat jeszcze nie odpowiada.
@@ -58,6 +64,7 @@ Użyj serwerowego /api/chat ze streamText i interfejsu zgodnego
 z wybraną wersją SDK. Odpowiedź ma docierać strumieniowo.
 Przekazuj historię bieżącej rozmowy, aby model znał poprzednie wiadomości.
 Dodaj stan oczekiwania, czytelny błąd i blokadę pustych wiadomości.
+Chat ma być żartobliwy i mroczny.
 
 Konfigurację pobieraj ze zmiennych OPENROUTER_API_KEY i OPENROUTER_MODEL.
 Przygotuj .env.example z pustymi polami oraz .gitignore chroniący
