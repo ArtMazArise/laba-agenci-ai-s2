@@ -27,6 +27,11 @@ function config(): Config | null {
 
 export function isAuthConfigured() { return config() !== null; }
 
+export function getMaxAttempts() {
+  const limit = Number(process.env.CHAT_MAX_ATTEMPTS);
+  return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : 5;
+}
+
 export function isLearningMode() {
   return process.env.NODE_ENV === "development" && process.env.AUTH_LEARNING_MODE?.trim().toLowerCase() !== "false";
 }
@@ -134,11 +139,12 @@ export async function login(password: string): Promise<LoginResult> {
   const settings = config();
   if (!settings) throw new Error("Auth not configured");
   return withState(settings, (state) => {
-    if (state.failures >= 3) return { ok: false, remaining: 0, retryAt: isLearningMode() ? 0 : state.resetAt, attempted: false };
+    const maxAttempts = getMaxAttempts();
+    if (state.failures >= maxAttempts) return { ok: false, remaining: 0, retryAt: isLearningMode() ? 0 : state.resetAt, attempted: false };
     if (!equal(password, settings.password)) {
       if (state.failures === 0) state.resetAt = isLearningMode() ? Number.MAX_SAFE_INTEGER : Date.now() + LOCKOUT_MS;
       state.failures += 1;
-      return { ok: false, remaining: 3 - state.failures, retryAt: state.failures >= 3 && !isLearningMode() ? state.resetAt : 0, attempted: true };
+      return { ok: false, remaining: maxAttempts - state.failures, retryAt: state.failures >= maxAttempts && !isLearningMode() ? state.resetAt : 0, attempted: true };
     }
     // Sukces nie resetuje globalnego limitu błędnych prób innych osób.
     const sid = randomBytes(24).toString("hex");

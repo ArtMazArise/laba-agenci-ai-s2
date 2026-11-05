@@ -27,6 +27,8 @@ Preview i Production nie powinny współdzielić stanu warsztatu: użyj osobnego
 Wymagane do ochrony dostępu:
 
 - `CHAT_PASSWORD`
+- `CHAT_MAX_ATTEMPTS`
+- `CHAT_DUEL_ROUNDS`
 - `SESSION_SECRET`
 - `BLOB_READ_WRITE_TOKEN` — dodawany przy połączeniu prywatnego Blob Store
 

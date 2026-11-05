@@ -281,3 +281,63 @@ test("flagi env są niewrażliwe na wielkość liter; wyłączenie działa bez k
   }
   assert.equal(app.calls.length, 0);
 });
+
+test("partie po 5 rund: 10 odpowiedzi, pauza, zgoda i kolejne 10 odpowiedzi", async () => {
+  const controller = new AbortController();
+  const gate = createDuelPause();
+  const calls = [];
+  const batches = [];
+  let notifyPaused;
+  const paused = new Promise((resolve) => { notifyPaused = resolve; });
+  const responder = (name) => async () => { calls.push(name); return name; };
+  const running = runDuel({
+    initialPrompt: "test", responders: [responder("A"), responder("B")], signal: controller.signal,
+    onTurn: () => {}, pause: async () => {}, roundsPerBatch: 5,
+    onBatchComplete: async (rounds) => {
+      batches.push(rounds);
+      if (batches.length === 2) return false;
+      gate.setPaused(true);
+      notifyPaused();
+      await gate.wait(controller.signal);
+      return !controller.signal.aborted;
+    },
+  });
+  await paused;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls.length, 10);
+  gate.setPaused(false);
+  await running;
+  assert.equal(calls.length, 20);
+  assert.deepEqual(batches, [5, 10]);
+  assert.deepEqual(calls.slice(8, 12), ["A", "B", "A", "B"]);
+});
+
+test("partia konfigurowalna: 2 rundy; bez zgody brak dalszych wywołań", async () => {
+  let calls = 0;
+  const responder = async () => { calls += 1; return "MAX"; };
+  await runDuel({ initialPrompt: "test", responders: [responder, responder], signal: new AbortController().signal,
+    roundsPerBatch: 2, onTurn: () => {}, pause: async () => {},
+  });
+  assert.equal(calls, 4);
+  for (const [value, expected] of [[undefined, 5], ["3", 3], [0, 5], ["bad", 5], [101, 5]]) {
+    assert.equal(duelModule.namespace.getDuelBatchSize(value), expected);
+  }
+});
+
+test("Stop podczas automatycznej pauzy nie uruchamia kolejnej partii", async () => {
+  const controller = new AbortController();
+  const gate = createDuelPause();
+  let calls = 0;
+  const responder = async () => { calls += 1; return "MAX"; };
+  await runDuel({ initialPrompt: "test", responders: [responder, responder], signal: controller.signal,
+    roundsPerBatch: 1, onTurn: () => {}, pause: async () => {},
+    onBatchComplete: async () => {
+      gate.setPaused(true);
+      const waiting = gate.wait(controller.signal);
+      controller.abort();
+      await waiting;
+      return !controller.signal.aborted;
+    },
+  });
+  assert.equal(calls, 2);
+});

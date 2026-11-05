@@ -67,7 +67,7 @@ function ChatPanel({ chat, title, dueling, canDuel, onStartDuel }: {
   }
 
   return <div className="chat-panel">
-    <div className="chat-topbar"><span><Skull /> {title}</span><span className="status">{chat.isBusy ? "PRZYWOŁUJE SŁOWA…" : "KRYPTA OTWARTA"}</span></div>
+    <div className="chat-topbar"><span><Skull /> {title}</span><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span></div>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
       {chat.messages.map((item) => <div className={`message message-${item.role}`} key={item.id}>
         <span className="message-author">{item.role === "user" ? "Wiadomość" : title}</span>
@@ -91,11 +91,12 @@ function ChatPanel({ chat, title, dueling, canDuel, onStartDuel }: {
   </div>;
 }
 
-export default function ChatArena({ enabled }: { enabled: EnabledProviders }) {
+export default function ChatArena({ enabled, roundsPerBatch = 5 }: { enabled: EnabledProviders; roundsPerBatch?: number }) {
   const openrouter = useMaxChat("openrouter");
   const google = useMaxChat("google");
   const [dueling, setDueling] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [batchQuestion, setBatchQuestion] = useState(false);
   const [selection, setActive] = useState(enabled);
   const active = { openrouter: selection.openrouter && enabled.openrouter, google: selection.google && enabled.google };
   const [chatHeight, setChatHeight] = useState(600);
@@ -124,6 +125,7 @@ export default function ChatArena({ enabled }: { enabled: EnabledProviders }) {
     if (!duelController.current) return;
     pauseControl.current?.setPaused(!paused);
     setPaused(!paused);
+    if (paused) setBatchQuestion(false);
   }
 
   function beginResize(event: PointerEvent<HTMLDivElement>) {
@@ -151,6 +153,7 @@ export default function ChatArena({ enabled }: { enabled: EnabledProviders }) {
     const gate = createDuelPause();
     pauseControl.current = gate;
     setPaused(false);
+    setBatchQuestion(false);
     setDueling(true);
     setTurns(0);
     setDuelError("");
@@ -162,6 +165,14 @@ export default function ChatArena({ enabled }: { enabled: EnabledProviders }) {
       startIndex: provider === "google" ? 1 : 0,
       signal: controller.signal,
       onTurn: setTurns,
+      roundsPerBatch,
+      onBatchComplete: async () => {
+        gate.setPaused(true);
+        setPaused(true);
+        setBatchQuestion(true);
+        await gate.wait(controller.signal);
+        return !controller.signal.aborted;
+      },
       waitForResume: gate.wait,
     }).catch(() => {
       if (!controller.signal.aborted) setDuelError("Pojedynek zatrzymany: błąd lub brak odpowiedzi. Sprawdź komunikaty w oknach czatu.");
@@ -171,6 +182,7 @@ export default function ChatArena({ enabled }: { enabled: EnabledProviders }) {
         pauseControl.current = null;
         setDueling(false);
         setPaused(false);
+        setBatchQuestion(false);
       }
     });
     return true;
@@ -197,12 +209,12 @@ export default function ChatArena({ enabled }: { enabled: EnabledProviders }) {
         {active.google && <ChatPanel chat={google} title="MAX · Gemini" dueling={dueling} canDuel={activeCount === 2 && !busy} onStartDuel={(text) => startDuel("google", text)} />}
       </div>
       <div className="duel-controls">
-        <p className="duel-status" role="status">{dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · wypowiedzi: ${turns}` : "Wpisz temat pod wybranym czatem i kliknij Pojedynek! — ten MAX zacznie."}</p>
+        <p className="duel-status" role="status">{batchQuestion ? `Ukończono ${Math.floor(turns / 2)} rund. Czy chcesz kontynuować przez kolejne ${roundsPerBatch} rund?` : dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : `Wpisz temat i kliknij Pojedynek! Automatyczna pauza co ${roundsPerBatch} rund.`}</p>
         <div className="duel-buttons">
-          <button className="secondary-button" onClick={togglePause} disabled={!dueling}>{paused ? "Kontynuuj" : "Pauza"}</button>
-          <button className="stop-button" onClick={stopDuel} disabled={!dueling && !busy}>Stop</button>
+          <button className="secondary-button" onClick={togglePause} disabled={!dueling}>{batchQuestion ? `Tak, kolejne ${roundsPerBatch} rund` : paused ? "Kontynuuj" : "Pauza"}</button>
+          <button className="stop-button" onClick={stopDuel} disabled={!dueling && !busy}>{batchQuestion ? "Nie, zakończ" : "Stop"}</button>
         </div>
-        <p className="usage-note">Każda odpowiedź zużywa limit API; przy płatnych modelach także środki. Pojedynek trwa do zatrzymania, a historia rośnie z każdą turą.</p>
+        <p className="usage-note">Runda to po jednej odpowiedzi obu MAX-ów. Każda odpowiedź zużywa limit API; przy płatnych modelach także środki. Po {roundsPerBatch} rundach następuje pauza i pytanie o kolejną partię.</p>
         {duelError && <p className="chat-feedback chat-error" role="alert">{duelError}</p>}
       </div>
       {activeCount > 0 && <div className="chat-resizer" role="slider" tabIndex={0} aria-label="Wysokość czatów" aria-orientation="vertical" aria-valuemin={360} aria-valuemax={1400} aria-valuenow={chatHeight} aria-valuetext={`${chatHeight} pikseli`} onPointerDown={beginResize} onPointerMove={resizeChats} onPointerUp={endResize} onPointerCancel={endResize} onLostPointerCapture={() => { resizeStart.current = null; }} onKeyDown={(event) => {

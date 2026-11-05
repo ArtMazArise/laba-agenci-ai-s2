@@ -25,6 +25,8 @@ function publicError(error: unknown, provider: "openrouter" | "google"): string 
         return `MAX: Model jest niedostępny. Sprawdź ${provider === "google" ? "GEMINI_MODEL" : "OPENROUTER_MODEL"} w .env.local.`;
       case 429:
         return `MAX: ${name} zgłasza limit zapytań. Poczekaj i sprawdź dostępny limit konta.`;
+      case 503:
+        return `MAX: ${name} jest chwilowo przeciążony lub niedostępny. Spróbuj później.`;
     }
   }
   return `MAX: Połączenie z ${name} nie powiodło się lub odpowiedź została przerwana. Spróbuj ponownie; sprawdź konfigurację i dostępność modelu.`;

@@ -12,7 +12,7 @@ const secret = "test-only-secret-0123456789-abcdefghijklmnopqrstuvwxyz";
 async function setup(t, overrides = {}, sharedDirectory, blobState = { value: null, version: 0, unavailable: false }) {
   const directory = sharedDirectory || await mkdtemp(path.join(os.tmpdir(), "max-auth-test-"));
   if (!sharedDirectory) t.after(() => rm(directory, { recursive: true, force: true }));
-  const env = { CHAT_PASSWORD: password, SESSION_SECRET: secret, AUTH_STATE_DIR: directory, NODE_ENV: "test", ...overrides };
+  const env = { CHAT_PASSWORD: password, CHAT_MAX_ATTEMPTS: "3", SESSION_SECRET: secret, AUTH_STATE_DIR: directory, NODE_ENV: "test", ...overrides };
   let now = Date.now();
   class Clock extends Date { static now() { return now; } }
   const context = vm.createContext({ process: { env, cwd: () => directory }, Buffer, Response, Request, URL, Date: Clock, AbortSignal, setTimeout, clearTimeout });
@@ -77,8 +77,11 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
           : key === "generateText" ? async (options) => {
             jokeCalls.push(options);
             if (env.TEST_JOKE_FAILURE === "429") throw new MockAPICallError(429);
+            if (env.TEST_JOKE_FAILURE === "503") throw new MockAPICallError(503);
             if (env.TEST_JOKE_FAILURE === "empty-length") return { text: "", finishReason: "length" };
-            return { text: "Żart z atrapy AI", finishReason: "stop" };
+            if (env.TEST_JOKE_FAILURE === "analysis") return { text: 'Analyze the Request: private model analysis. {"joke":"Żart"}', finishReason: "stop" };
+            if (env.TEST_JOKE_FAILURE === "too-long") return { text: JSON.stringify({ joke: "x".repeat(321) }), finishReason: "stop" };
+            return { text: JSON.stringify({ joke: "Żart z atrapy AI" }), finishReason: "stop" };
           }
           : key.startsWith("create") ? () => (model) => ({ model }) : unexpectedModel);
       }, { context });
@@ -97,7 +100,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   }
   return {
     auth, directory, env, modelCalls: () => modelCalls, jokeCalls, blobState,
-    login: (value, origin) => login(request("login", { password: value }, "", origin)),
+    login: (value, origin, previousJokeProvider) => login(request("login", { password: value, previousJokeProvider }, "", origin)),
     logout: (cookie) => logout(request("logout", {}, cookie)),
     chat: (cookie = "", provider = "openrouter", origin) => chat(request("chat", { provider, messages: [] }, cookie, origin)),
     advance: (milliseconds) => { now += milliseconds; },
@@ -137,7 +140,7 @@ test("błędne hasło: dokładnie trzy próby, żarty aktywnych MAX-ów, późni
     assert.equal(response.status, remaining ? 401 : 429);
     const body = await response.json();
     assert.equal(body.remaining, remaining);
-    assert.equal(body.jokes.length, 2);
+    assert.equal(body.jokes.length, 1);
     assert.equal(response.headers.get("set-cookie"), null);
   }
   assert.equal((await app.login(password)).status, 429);
@@ -228,7 +231,7 @@ test("tryb nauki: trzy próby, odświeżenie zeruje je bez czekania", async (t) 
     const response = await app.login("wrong");
     const body = await response.json();
     assert.equal(body.retryAt, 0);
-    if (i === 2) { assert.equal(body.refreshToRetry, true); assert.match(body.error, /F5/); }
+    if (i === 2) { assert.equal(body.refreshToRetry, true); assert.match(body.error, /ZABLOKOWANO/); assert.doesNotMatch(body.error, /F5|kolejne/); }
   }
   assert.equal((await app.login(password)).status, 429);
   await app.auth.resetLearningAttempts(); // Ten sam kod jest wywoływany przy F5 na ekranie hasła.
@@ -249,22 +252,22 @@ test("adres Next 0.0.0.0: Origin jest porównywany z Host przeglądarki", async 
   assert.equal(app.auth.sameOrigin(new Request("http://0.0.0.0:3000/api/login", { headers: { host: "localhost:3000", origin: "http://localhost:3001" } })), false);
 });
 
-test("błędne hasło generuje żart każdego aktywnego modelu, bez hasła w promptach", async (t) => {
+test("błędne hasło generuje tylko jeden żart, bez hasła w prompcie", async (t) => {
   const app = await setup(t, { OPENROUTER_API_KEY: "mock-router-key", OPENROUTER_MODEL: "mock-router-model", GOOGLE_GENERATIVE_AI_API_KEY: "mock-google-key", GEMINI_MODEL: "mock-google-model" });
   const response = await app.login("wrong-sensitive-password");
   const body = await response.json();
-  assert.equal(body.jokes.length, 2);
+  assert.equal(body.jokes.length, 1);
   assert.ok(body.jokes.every((joke) => joke.generated === true));
-  assert.equal(app.jokeCalls.length, 2);
+  assert.equal(app.jokeCalls.length, 1);
   for (const options of app.jokeCalls) {
     assert.doesNotMatch(options.prompt, /wrong-sensitive-password|test-workshop-password|mock-router-key|mock-google-key/);
     assert.equal(options.maxRetries, 0);
   }
   await app.login("wrong");
   await app.login("wrong");
-  assert.equal(app.jokeCalls.length, 6);
+  assert.equal(app.jokeCalls.length, 3);
   await app.login("wrong");
-  assert.equal(app.jokeCalls.length, 6); // Blokada nie generuje kolejnych żartów.
+  assert.equal(app.jokeCalls.length, 3); // Blokada nie generuje kolejnych żartów.
   assert.equal(app.modelCalls(), 0); // Nadal zero wywołań czatu.
 });
 
@@ -314,4 +317,58 @@ test("żart OpenRouter ma większy budżet; brak tekstu i HTTP 429 mają odrębn
   const error = await (await throttled.login("wrong")).json();
   assert.match(error.jokes[0].text, /limit zapytań/);
   assert.doesNotMatch(error.jokes[0].text, /PRIVATE_PROVIDER_DETAIL|mock-router-key/);
+});
+
+
+test("interfejs dostaje wyłącznie pole krótkiego żartu, nigdy surową analizę modelu", async (t) => {
+  const env = { OPENROUTER_API_KEY: "mock-router-key", OPENROUTER_MODEL: "mock-router-model", GEMINI_ENABLED: "false" };
+  const valid = await setup(t, env);
+  const joke = await (await valid.login("wrong")).json();
+  assert.equal(joke.jokes[0].text, "Żart z atrapy AI");
+  assert.equal(valid.jokeCalls[0].providerOptions.openrouter.reasoning.exclude, true);
+  assert.equal(valid.jokeCalls[0].providerOptions.openrouter.reasoning.effort, "none");
+  for (const failure of ["analysis", "too-long"]) {
+    const app = await setup(t, { ...env, TEST_JOKE_FAILURE: failure });
+    const response = await (await app.login("wrong")).json();
+    assert.equal(response.jokes[0].generated, false);
+    assert.match(response.jokes[0].text, /oczekiwanym formacie/);
+    assert.doesNotMatch(JSON.stringify(response), /Analyze the Request|private model analysis/);
+  }
+});
+
+
+test("jeden żart: losowy pierwszy MAX, potem drugi i znowu pierwszy", async (t) => {
+  const app = await setup(t, { OPENROUTER_API_KEY: "mock-router-key", OPENROUTER_MODEL: "mock-router-model", GOOGLE_GENERATIVE_AI_API_KEY: "mock-google-key", GEMINI_MODEL: "mock-google-model" });
+  const first = await (await app.login("wrong")).json();
+  assert.ok(["openrouter", "google"].includes(first.jokeProvider));
+  const second = await (await app.login("wrong", undefined, first.jokeProvider)).json();
+  const third = await (await app.login("wrong", undefined, second.jokeProvider)).json();
+  assert.notEqual(first.jokeProvider, second.jokeProvider);
+  assert.equal(third.jokeProvider, first.jokeProvider);
+  for (const body of [first, second, third]) assert.equal(body.jokes.length, 1);
+  assert.equal(app.jokeCalls.length, 3);
+});
+
+
+test("domyślnie pięć prób; env zmienia limit i komunikat końcowy", async (t) => {
+  for (const [setting, limit] of [[undefined, 5], ["2", 2], ["0", 5], ["invalid", 5]]) {
+    const app = await setup(t, { CHAT_MAX_ATTEMPTS: setting });
+    assert.equal(app.auth.getMaxAttempts(), limit);
+    for (let used = 1; used <= limit; used++) {
+      const response = await app.login("wrong");
+      const body = await response.json();
+      assert.equal(body.remaining, limit - used);
+      assert.equal(body.error, `Błędne hasło — ${used}/${limit} prób${used === limit ? " — ZABLOKOWANO" : ""}`);
+      assert.doesNotMatch(body.error, /F5|kolejne/);
+    }
+    assert.equal((await app.login(password)).status, 429);
+  }
+});
+
+test("Gemini HTTP 503 pokazuje przejściową niedostępność bez ponowień", async (t) => {
+  const app = await setup(t, { OPENROUTER_ENABLED: "false", GOOGLE_GENERATIVE_AI_API_KEY: "mock-google-key", GEMINI_MODEL: "mock-google-model", TEST_JOKE_FAILURE: "503" });
+  const body = await (await app.login("wrong")).json();
+  assert.equal(body.jokes[0].generated, false);
+  assert.match(body.jokes[0].text, /chwilowo przeciążony lub niedostępny/);
+  assert.equal(app.jokeCalls.length, 1);
 });

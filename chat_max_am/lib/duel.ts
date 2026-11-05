@@ -1,5 +1,10 @@
 type Responder = (text: string) => Promise<string | null>;
 
+export function getDuelBatchSize(value?: string | number) {
+  const rounds = Number(value);
+  return Number.isInteger(rounds) && rounds >= 1 && rounds <= 100 ? rounds : 5;
+}
+
 export function createDuelPause() {
   let paused = false;
   const listeners = new Set<() => void>();
@@ -37,17 +42,20 @@ function waitBetweenTurns(signal: AbortSignal) {
 }
 
 // Jedna odpowiedź naraz. Następna tura dopiero po ukończeniu poprzedniej.
-export async function runDuel({ initialPrompt, responders, signal, onTurn, startIndex = 0, pause = waitBetweenTurns, waitForResume = async () => {} }: {
+export async function runDuel({ initialPrompt, responders, signal, onTurn, startIndex = 0, roundsPerBatch = 5, onBatchComplete, pause = waitBetweenTurns, waitForResume = async () => {} }: {
   initialPrompt: string;
   responders: [Responder, Responder];
   signal: AbortSignal;
   onTurn: (turn: number) => void;
   startIndex?: 0 | 1;
+  roundsPerBatch?: number;
+  onBatchComplete?: (completedRounds: number) => Promise<boolean>;
   pause?: (signal: AbortSignal) => Promise<void>;
   waitForResume?: (signal: AbortSignal) => Promise<void>;
 }) {
   let prompt = `Rozpocznij żartobliwy, mroczny pojedynek na temat: ${initialPrompt}`;
   let turn = 0;
+  const turnsPerBatch = getDuelBatchSize(roundsPerBatch) * 2;
   while (!signal.aborted) {
     await waitForResume(signal);
     if (signal.aborted) return;
@@ -58,6 +66,11 @@ export async function runDuel({ initialPrompt, responders, signal, onTurn, start
     turn += 1;
     onTurn(turn);
     prompt = `Twój rozmówca MAX ${index === 0 ? "OpenRouter" : "Gemini"} powiedział:\n\n${reply}\n\nTwoja riposta?`;
+    if (signal.aborted) return;
+    if (turn % turnsPerBatch === 0) {
+      // Bez jawnej zgody na następną partię nie wykonujemy kolejnego wywołania.
+      if (!onBatchComplete || !await onBatchComplete(turn / 2) || signal.aborted) return;
+    }
     await pause(signal);
   }
 }
