@@ -1,5 +1,6 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { requireSession } from "@/lib/auth";
 import {
   APICallError,
   convertToModelMessages,
@@ -30,6 +31,8 @@ function publicError(error: unknown, provider: "openrouter" | "google"): string 
 }
 
 export async function POST(request: Request) {
+  const denied = await requireSession(request);
+  if (denied) return denied;
   let body;
   try {
     body = await request.json();

@@ -129,6 +129,8 @@ Bez kont użytkowników, rejestracji, OAuth i bazy danych.
 Sprawdź poprawne i błędne hasło, wyjście oraz odmowę /api/chat
 bez sesji. Te próby nie wymagają płatnego wywołania modelu.
 Podaj wykonane sprawdzenia i te, które mam wykonać ręcznie.
+
+daj trzy próby hasła, po każdej błędnej daj żart od każdego aktywnego AI
 ```
 
 **Ty:** ustaw **CHAT_PASSWORD** lokalnie w .env.local. Użyj własnego, trudnego do zgadnięcia hasła, innego niż hasła do Twoich kont. Po zmianie konfiguracji uruchom ponownie serwer.

@@ -51,9 +51,14 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
       return (model) => ({ model, provider: "google" });
     });
   }, { context });
+  const auth = new vm.SyntheticModule(["requireSession"], function () {
+    // Te testy sprawdzają czat po autoryzacji; prawdziwe sesje testuje auth.test.mjs.
+    this.setExport("requireSession", async () => null);
+  }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
     if (specifier === "ai") return ai;
+    if (specifier === "@/lib/auth") return auth;
     if (specifier === "@ai-sdk/google") return google;
     if (specifier === "@openrouter/ai-sdk-provider") return provider;
     throw new Error(`Unexpected import: ${specifier}`);

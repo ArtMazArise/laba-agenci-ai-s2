@@ -5,3 +5,7 @@ out/
 !.env.example
 *.tsbuildinfo
 next-env.d.ts
+.auth-state/
+.publish/
+.vercel/
+*.log

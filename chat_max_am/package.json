@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@vercel/blob": "2.8.2",
     "@ai-sdk/google": "^3.0.0",
     "@ai-sdk/react": "^3.0.0",
     "@openrouter/ai-sdk-provider": "2.9.1",
@@ -18,7 +19,8 @@
     "@types/react-dom": "^19.0.0"
   },
   "scripts": {
-    "test": "node --experimental-vm-modules tests/chat-route.test.mjs",
+    "publish:prepare": "node scripts/prepare-publish.mjs",
+    "test": "node --experimental-vm-modules tests/chat-route.test.mjs && node --experimental-vm-modules tests/auth.test.mjs",
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0"

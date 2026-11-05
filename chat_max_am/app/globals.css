@@ -29,6 +29,27 @@ button:hover:enabled { background: #ceff89; box-shadow: 0 0 22px #b4f95433; }
 button:disabled { opacity: .45; cursor: default; }
 input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-offset: 3px; }
 .footer-note { text-align: center; color: #7c8277; font-size: 11px; margin-top: 20px; letter-spacing: 1px; }
+.login-page { width: min(560px, calc(100% - 32px)); margin: 12vh auto; }
+.login-card { background: #0c0e10; border: 1px solid #43582c; border-radius: 16px; padding: 28px; box-shadow: 0 24px 100px #000b; }
+.login-card h1 { font-size: 36px; }
+.login-card form { margin-top: 24px; padding: 0; border: 0; background: transparent; flex-wrap: wrap; }
+.login-card .chat-error { margin-top: 18px; border: 1px solid #663337; border-radius: 8px; }
+.login-jokes { margin-top: 18px; color: #acb99d; font-size: 13px; line-height: 1.6; }
+.login-jokes strong { color: #bdff59; }
+.login-scene .skeleton-left { left: max(20px, calc(50% - 440px)); }
+.login-scene .skeleton-right { right: max(20px, calc(50% - 440px)); }
+.login-scene .skeleton { top: 25%; width: 130px; opacity: .8; }
+.login-scene .floating-skull { opacity: .55; }
+.login-card .usage-note { margin: 16px 0 0; }
+@media (max-width: 900px) {
+  .login-page { margin-top: 185px; }
+  .login-scene .skeleton { top: 15px; width: 65px; }
+  .login-scene .skeleton-left { left: calc(50% - 95px); right: auto; }
+  .login-scene .skeleton-right { right: calc(50% - 95px); }
+}
+.logout-area { margin-bottom: 18px; text-align: right; }
+.logout-area button { padding: 9px 18px; font-size: 13px; }
+.logout-area p { color: #ffb6b6; font-size: 12px; }
 .arena { width: min(1240px, calc(100% - 280px)); margin-top: 36px; }
 .chat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
 .chat-grid[data-count="1"] { grid-template-columns: minmax(0, 1fr); }

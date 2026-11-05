@@ -40,6 +40,40 @@ Pierwszy test wykonaj samodzielnie w przeglądarce. Każda odpowiedź zużywa li
 
 Bez bazy danych. Dark i animacje pozostają w aplikacji.
 
+## Hasło warsztatowe i sesja
+
+Cała konfiguracja pozostaje w `.env.local` (wzór: `.env.example`). Nie nadpisuj istniejącego pliku ani kluczy dostawców.
+
+1. Dodaj `CHAT_PASSWORD=` i po znaku `=` wpisz własne hasło warsztatowe (1–512 znaków, nie same spacje). Nie udostępniaj go w rozmowie.
+2. `SESSION_SECRET` został wygenerowany lokalnie kryptograficznie i dopisany do istniejącego `.env.local`, bez odczytu jego wcześniejszej zawartości. Nie kopiuj na niego pustego pola z przykładu. Przy nowej instalacji wygenerujesz sekret poleceniem `node scripts/generate-session-secret.mjs`; kolejne uruchomienie dopisuje nową wartość i unieważnia wcześniejsze sesje. Skrypt nigdy nie wypisuje sekretu.
+3. Lokalnie `AUTH_STATE_DIR` zostaw puste — serwer użyje ignorowanego przez Git katalogu `.auth-state/`. Zrestartuj `npm run dev` po zmianie `.env.local`.
+
+Hasło porównywane jest wyłącznie na serwerze. Sesja trwa 8 godzin i ma podpis HMAC oparty na `SESSION_SECRET`. Cookie zawiera tylko losowy identyfikator sesji, datę wygaśnięcia oraz podpis: bez hasła i kluczy API. Ustawienia: `HttpOnly`, `SameSite=Strict`, `Path=/`, a w produkcji także `Secure`. Strona i `/api/chat` sprawdzają sesję przed dostępem do czatu, obu dostawców i modeli. Brak sesji daje 401, brak konfiguracji lub magazynu daje 503; ochrona nigdy nie wyłącza się sama. Żądania logowania, wyjścia i zalogowanego czatu muszą mieć prawidłowy `Origin`.
+
+„Wyjdź” zatrzymuje odpowiedzi i pojedynek, unieważnia sesję po stronie serwera, usuwa cookie i wraca do ekranu hasła. Skopiowane wcześniej cookie też przestaje działać. Zmiana hasła lub sekretu unieważnia stare sesje.
+
+W lokalnym `npm run dev` domyślnie działa `AUTH_LEARNING_MODE=true`: po trzech błędnych próbach wystarczy odświeżyć ekran hasła klawiszem F5, aby dostać trzy kolejne próby. Nie trzeba czekać 15 minut. Ustawienie `AUTH_LEARNING_MODE=false` przywraca pełny limit również lokalnie. W produkcji tryb nauki jest zawsze wyłączony: po trzech błędach obowiązuje 15-minutowe okno liczone od pierwszego błędu. Limit dotyczy całego wspólnego hasła warsztatowego, więc błędy jednej osoby mogą chwilowo zablokować logowanie pozostałym. Już zalogowane sesje pozostają aktywne. Limit i identyfikatory sesji zapisują się w pliku stanu; licznik nie zależy od cookie, adresu IP ani pamięci procesu. Atomowa blokada plikowa chroni również przed równoczesnymi próbami. Sukces nie kasuje wcześniejszych błędów w oknie. Po każdej z trzech faktycznie błędnych prób serwer prosi każdy aktywny i skonfigurowany model o prawdziwy żart. To jawny wyjątek na ekranie logowania; zużywa limit API i ewentualne środki dostawców. Modele dostają wyłącznie stały prompt, bez wpisanego hasła ani danych z formularza. Pobieranie jest równoległe, z limitem 10 sekund i bez ponowień. Brak konfiguracji, pusty tekst lub błąd daje jawny komunikat „Żart niedostępny”, bez lokalnej imitacji. Kolejne żądania po wyczerpaniu trzech prób nie uruchamiają modeli. `/api/chat` nadal wymaga sesji i nigdy nie wywołuje modelu bez niej.
+
+### Hosting
+
+Instrukcje publikacji na własnym GitHub, konfiguracji Vercel i obowiązkowych testów hasła po wdrożeniu: [DEPLOY.md](DEPLOY.md).
+
+Na Vercel sesje i limit prób korzystają z prywatnego Vercel Blob Store przez `BLOB_READ_WRITE_TOKEN`. Bez niego logowanie jest zablokowane. Wspólne odczyty bez cache i warunkowe zapisy ETag zapewniają spójny stan przy wielu instancjach. Magazyn nie zawiera haseł ani kluczy API; nie zapisuje też historii czatu. Nie dodano bazy danych.
+
+Lokalnie nadal używany jest ignorowany katalog `.auth-state/`. Przy własnym serwerze można wskazać `AUTH_STATE_DIR` jako trwały katalog współdzielony przez wszystkie instancje. Dysk lokalny funkcji serverless lub `/tmp` nie zapewnia globalnego limitu. Niedostępny lub uszkodzony magazyn blokuje dostęp zamiast zerować licznik.
+
+### Sprawdzenia ręczne w przeglądarce
+
+Po ustawieniu hasła i restarcie serwera (błędne hasło uruchomi teraz generowanie żartów przez aktywne modele):
+
+1. W prywatnym oknie przeglądarki zobacz ekran „Wpisz hasło”. Wpisz jeden raz błędne hasło: komunikat o 2 pozostałych próbach i żarty aktywnych MAX-ów.
+2. Wpisz prawidłowe hasło: zobaczysz czaty. Nie wysyłaj wiadomości do modeli w ramach tego testu.
+3. Kliknij „Wyjdź”: ekran hasła wraca; odświeżenie nadal nie pokazuje czatu.
+4. Lokalnie sprawdź trzy błędne próby: po trzeciej pojawi się prośba o F5. Odśwież stronę i sprawdź poprawne hasło — bez czekania. W produkcji lub przy wyłączonym trybie nauki F5 nie resetuje blokady 15-minutowej.
+5. Opcjonalnie w konsoli przeglądarki wykonaj `fetch('/api/chat', {method: 'POST', credentials: 'omit'}).then(r => console.log(r.status))`. Oczekiwane 401; brak cookie zatrzymuje żądanie przed modelem.
+
+Automatyczne testy używają oddzielnego katalogu tymczasowego, sztucznych haseł i sekretów. Nie odczytują rzeczywistego `.env.local`, nie zmieniają limitu warsztatu i nie wykonują płatnych wywołań. Obejmują dobre i złe hasło, trzecią próbę, blokadę równoległych prób i nowych instancji, wyjście i odrzucanie starej sesji, wygaśnięcie/podmianę cookie, zmianę hasła, brak konfiguracji, niedostępny magazyn, cookie produkcyjne oraz 401 obu modeli bez sesji, reset prób w lokalnym trybie nauki, zgodność Origin/Host i generowanie żartów bez przekazywania hasła.
+
 ## Sprawdzenie bez płatnych wywołań
 
 `npm test` sprawdza konfigurację obu dostawców, historię, błędy oraz naprzemienne tury, przerwanie i zatrzymywanie po błędzie. Testy podstawiają atrapę SDK oraz własne zmienne środowiskowe: nie czytają `.env.local` i nie łączą się z modelami. Pełne sprawdzenie typów po instalacji: `npx tsc --noEmit`.
