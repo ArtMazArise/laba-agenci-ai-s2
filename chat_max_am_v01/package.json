@@ -1,0 +1,28 @@
+{
+  "name": "max-chatbot",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@vercel/blob": "2.8.2",
+    "@ai-sdk/google": "^3.0.0",
+    "@ai-sdk/react": "^3.0.0",
+    "@openrouter/ai-sdk-provider": "2.9.1",
+    "ai": "^6.0.0",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
+  },
+  "scripts": {
+    "publish:prepare": "node scripts/prepare-publish.mjs",
+    "test": "node --experimental-vm-modules tests/chat-route.test.mjs && node --experimental-vm-modules tests/auth.test.mjs",
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0"
+  }
+}
