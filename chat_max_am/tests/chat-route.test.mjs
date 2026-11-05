@@ -42,19 +42,26 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   const provider = new vm.SyntheticModule(["createOpenRouter"], function () {
     this.setExport("createOpenRouter", ({ apiKey }) => {
       assert.equal(apiKey, "test-key");
-      return (model) => ({ model });
+      return (model) => ({ model, provider: "openrouter" });
+    });
+  }, { context });
+  const google = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () {
+    this.setExport("createGoogleGenerativeAI", ({ apiKey }) => {
+      assert.equal(apiKey, "google-test-key");
+      return (model) => ({ model, provider: "google" });
     });
   }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
     if (specifier === "ai") return ai;
+    if (specifier === "@ai-sdk/google") return google;
     if (specifier === "@openrouter/ai-sdk-provider") return provider;
     throw new Error(`Unexpected import: ${specifier}`);
   });
   await route.evaluate();
   return {
-    post: (messages) => route.namespace.POST(new Request("http://localhost/api/chat", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages }),
+    post: (messages, extra = {}) => route.namespace.POST(new Request("http://localhost/api/chat", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages, ...extra }),
     })),
     rawPost: route.namespace.POST,
     calls,
@@ -113,4 +120,85 @@ test("błąd przed strumieniem: 502 bez surowych szczegółów", async () => {
   const response = await app.post(history);
   assert.equal(response.status, 502);
   assert.doesNotMatch(await response.text(), /SECRET_PROVIDER_DETAILS|test-key/);
+});
+
+
+test("Gemini używa osobnego klucza, modelu i pełnej historii", async () => {
+  const app = await setup({ GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key", GEMINI_MODEL: "gemini-test-model" });
+  assert.equal((await app.post(history, { provider: "google", mode: "duel" })).status, 200);
+  assert.equal(app.calls[0].model.provider, "google");
+  assert.equal(app.calls[0].model.model, "gemini-test-model");
+  assert.equal(app.calls[0].messages.length, history.length);
+  assert.match(app.calls[0].system, /pojedynek/);
+  assert.match(app.streamError(401), /Gemini/);
+  assert.match(app.streamError(404), /GEMINI_MODEL/);
+});
+
+test("brak konfiguracji Gemini nie blokuje OpenRouter; nieznany dostawca odrzucony", async () => {
+  const app = await setup();
+  const missing = await app.post(history, { provider: "google" });
+  assert.equal(missing.status, 503);
+  assert.match(await missing.text(), /GOOGLE_GENERATIVE_AI_API_KEY i GEMINI_MODEL/);
+  assert.equal((await app.post(history, { provider: "unknown" })).status, 400);
+  assert.equal(app.calls.length, 0);
+  assert.equal((await app.post(history, { provider: "openrouter" })).status, 200);
+  assert.equal(app.calls[0].model.provider, "openrouter");
+});
+
+const duelSource = await readFile(new URL("../lib/duel.ts", import.meta.url), "utf8");
+const duelContext = vm.createContext({ setTimeout, clearTimeout });
+const duelModule = new vm.SourceTextModule(ts.transpileModule(duelSource, {
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+}).outputText, { context: duelContext });
+await duelModule.link(() => { throw Error("Nieoczekiwany import"); });
+await duelModule.evaluate();
+const { runDuel } = duelModule.namespace;
+
+test("pojedynek: kolejność A-B-A, przekazanie odpowiedzi i stop bez następnego wywołania", async () => {
+  const controller = new AbortController();
+  const calls = [];
+  let active = 0;
+  const respond = (name) => async (text) => {
+    active += 1;
+    assert.equal(active, 1);
+    calls.push({ name, text });
+    await Promise.resolve();
+    active -= 1;
+    return `Odpowiedź ${name}`;
+  };
+  await runDuel({ initialPrompt: "szkielety", responders: [respond("A"), respond("B")], signal: controller.signal,
+    onTurn: (turn) => { if (turn === 3) controller.abort(); }, pause: async () => {},
+  });
+  assert.deepEqual(calls.map((call) => call.name), ["A", "B", "A"]);
+  assert.match(calls[1].text, /Odpowiedź A/);
+  assert.match(calls[2].text, /Odpowiedź B/);
+});
+
+test("pojedynek: błąd i pusta odpowiedź zatrzymują pętlę", async () => {
+  for (const responder of [async () => null, async () => { throw Error("offline"); }]) {
+    let secondCalls = 0;
+    await assert.rejects(runDuel({ initialPrompt: "test", responders: [responder, async () => { secondCalls += 1; return "B"; }],
+      signal: new AbortController().signal, onTurn: () => {}, pause: async () => {},
+    }));
+    assert.equal(secondCalls, 0);
+  }
+});
+
+test("pojedynek: stop w trakcie odpowiedzi nie uruchamia drugiego modelu", async () => {
+  const controller = new AbortController();
+  let secondCalls = 0;
+  await runDuel({ initialPrompt: "test", responders: [async () => { controller.abort(); return "Przerwana odpowiedź"; }, async () => { secondCalls += 1; return "B"; }],
+    signal: controller.signal, onTurn: () => assert.fail("Przerwana tura"), pause: async () => {},
+  });
+  assert.equal(secondCalls, 0);
+});
+
+test("pojedynek: stop przerywa oczekiwanie między turami", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const responder = async () => { calls += 1; return "Gotowe"; };
+  await runDuel({ initialPrompt: "test", responders: [responder, responder], signal: controller.signal,
+    onTurn: () => { setTimeout(() => controller.abort(), 10); },
+  });
+  assert.equal(calls, 1);
 });

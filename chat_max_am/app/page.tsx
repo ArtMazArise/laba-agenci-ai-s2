@@ -4,7 +4,36 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-const transport = new DefaultChatTransport({ api: "/api/chat" });
+import { runDuel } from "@/lib/duel";
+
+const transports = {
+  openrouter: new DefaultChatTransport({ api: "/api/chat", body: { provider: "openrouter" } }),
+  google: new DefaultChatTransport({ api: "/api/chat", body: { provider: "google" } }),
+};
+
+function useMaxChat(provider: "openrouter" | "google") {
+  const lastReply = useRef<string | null>(null);
+  const chat = useChat({
+    id: provider,
+    transport: transports[provider],
+    onFinish: ({ message, isAbort, isError, isDisconnect }) => {
+      lastReply.current = isAbort || isError || isDisconnect ? null : message.parts
+        .filter((part) => part.type === "text").map((part) => part.text).join("");
+    },
+    onError: () => { lastReply.current = null; },
+  });
+  return {
+    ...chat,
+    isBusy: chat.status === "submitted" || chat.status === "streaming",
+    async reply(text: string) {
+      lastReply.current = null;
+      await chat.sendMessage({ text }, { body: { mode: "duel" } });
+      return lastReply.current;
+    },
+  };
+}
+
+type MaxChat = ReturnType<typeof useMaxChat>;
 
 function Skull({ className = "" }: { className?: string }) {
   return <svg className={className} viewBox="0 0 100 110" fill="none" aria-hidden="true">
@@ -26,60 +55,132 @@ function Skeleton({ className }: { className: string }) {
   </div>;
 }
 
-export default function Home() {
-  const [message, setMessage] = useState("");
-  const { messages, sendMessage, status, error } = useChat({ transport });
-  const isBusy = status === "submitted" || status === "streaming";
+function ChatPanel({ chat, title, dueling }: { chat: MaxChat; title: string; dueling: boolean }) {
+  const [draft, setDraft] = useState("");
   const conversationRef = useRef<HTMLElement>(null);
-
   useEffect(() => {
-    const conversation = conversationRef.current;
-    if (conversation) conversation.scrollTop = conversation.scrollHeight;
-  }, [messages, status]);
+    const area = conversationRef.current;
+    if (area) area.scrollTop = area.scrollHeight;
+  }, [chat.messages, chat.status]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const text = message.trim();
-    if (!text || isBusy) return;
-    void sendMessage({ text });
-    setMessage("");
+    if (!draft.trim() || chat.isBusy || dueling) return;
+    void chat.sendMessage({ text: draft.trim() });
+    setDraft("");
   }
 
-  return (
-    <>
+  return <div className="chat-panel">
+    <div className="chat-topbar"><span><Skull /> {title}</span><span className="status">{chat.isBusy ? "PRZYWOŁUJE SŁOWA…" : "KRYPTA OTWARTA"}</span></div>
+    <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
+      {chat.messages.map((item) => <div className={`message message-${item.role}`} key={item.id}>
+        <span className="message-author">{item.role === "user" ? "Wiadomość" : title}</span>
+        {item.parts.map((part, index) => part.type === "text" ? <span key={index}>{part.text}</span> : null)}
+      </div>)}
+    </section>
+    {chat.isBusy && <p className="chat-feedback" role="status">{chat.status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
+    {chat.error && <p className="chat-feedback chat-error" role="alert">{chat.error.message.startsWith("MAX:") ? chat.error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</p>}
+    <form onSubmit={handleSubmit}>
+      <label className="sr-only" htmlFor={`draft-${chat.id}`}>Wiadomość do {title}</label>
+      <input id={`draft-${chat.id}`} placeholder="Napisz do tego MAX-a…" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={chat.isBusy || dueling} autoComplete="off" />
+      <button type="submit" disabled={!draft.trim() || chat.isBusy || dueling}>Ślij</button>
+    </form>
+    {chat.isBusy && !dueling && <button className="panel-stop" onClick={() => void chat.stop()}>Zatrzymaj odpowiedź</button>}
+  </div>;
+}
+
+export default function Home() {
+  const openrouter = useMaxChat("openrouter");
+  const google = useMaxChat("google");
+  const [message, setMessage] = useState("");
+  const [dueling, setDueling] = useState(false);
+  const [turns, setTurns] = useState(0);
+  const [duelError, setDuelError] = useState("");
+  const duelController = useRef<AbortController | null>(null);
+  const busy = openrouter.isBusy || google.isBusy;
+
+  useEffect(() => () => {
+    duelController.current?.abort();
+    void openrouter.stop();
+    void google.stop();
+  }, [openrouter.stop, google.stop]);
+
+  function sendBoth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!message.trim() || busy || duelController.current) return;
+    const text = message.trim();
+    setMessage("");
+    void openrouter.sendMessage({ text });
+    void google.sendMessage({ text });
+  }
+
+  function stopDuel() {
+    duelController.current?.abort();
+    void openrouter.stop();
+    void google.stop();
+    // Kontroler zostaje zajęty do zakończenia pętli, więc nie powstaną dwie pętle.
+  }
+
+  async function startDuel() {
+    if (!message.trim() || busy || duelController.current) return;
+    const controller = new AbortController();
+    duelController.current = controller;
+    setDueling(true);
+    setTurns(0);
+    setDuelError("");
+    openrouter.clearError();
+    google.clearError();
+    const initialPrompt = message.trim();
+    setMessage("");
+    try {
+      await runDuel({
+        initialPrompt,
+        responders: [openrouter.reply, google.reply],
+        signal: controller.signal,
+        onTurn: setTurns,
+      });
+    } catch {
+      if (!controller.signal.aborted) setDuelError("Pojedynek zatrzymany: błąd lub brak odpowiedzi. Sprawdź komunikaty w oknach czatu.");
+    } finally {
+      if (duelController.current === controller) {
+        duelController.current = null;
+        setDueling(false);
+      }
+    }
+  }
+
+  return <>
     <div className="haunted-scene" aria-hidden="true">
-      <Skeleton className="skeleton-left" />
-      <Skeleton className="skeleton-right" />
-      <Skull className="floating-skull skull-one" />
-      <Skull className="floating-skull skull-two" />
-      <Skull className="floating-skull skull-three" />
+      <Skeleton className="skeleton-left" /><Skeleton className="skeleton-right" />
+      <Skull className="floating-skull skull-one" /><Skull className="floating-skull skull-two" /><Skull className="floating-skull skull-three" />
     </div>
-    <main>
+    <main className="arena">
       <header>
         <p className="eyebrow"><span /> PO DRUGIEJ STRONIE EKRANU</p>
         <h1>Jestem <span>MAX</span>, od AM</h1>
-        <p className="subtitle">Masz odwagę napisać?</p>
+        <p className="subtitle">Dwa MAX-y. Jedna krypta. Napisz do jednego, obu albo rozpocznij pojedynek.</p>
       </header>
-      <div className="chat-panel">
-      <div className="chat-topbar"><span><Skull /> KRYPTA ROZMÓW</span><span className="status">{isBusy ? "MAX PRZYWOŁUJE SŁOWA…" : "MAX · OPENROUTER"}</span></div>
-      <section ref={conversationRef} className="conversation" role="log" aria-label="Rozmowa" aria-live="polite" aria-busy={isBusy}>
-        {messages.map((item) => (
-          <div className={`message message-${item.role}`} key={item.id}>
-            <span className="message-author">{item.role === "user" ? "Ty" : "MAX"}</span>
-            {item.parts.map((part, index) => part.type === "text" ? <span key={index}>{part.text}</span> : null)}
+      <div className="arena-controls">
+        <form className="shared-form" onSubmit={sendBoth}>
+          <label className="sr-only" htmlFor="shared-message">Wiadomość do obu lub temat pojedynku</label>
+          <input id="shared-message" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Wiadomość do obu lub temat pojedynku…" disabled={busy || dueling} autoComplete="off" />
+          <div className="arena-actions">
+            <button type="submit" disabled={!message.trim() || busy || dueling}>Ślij do obu</button>
+            <button className="secondary-button" type="button" onClick={() => void startDuel()} disabled={!message.trim() || busy || dueling}>Rozpocznij pojedynek</button>
           </div>
-        ))}
-      </section>
-      {isBusy && <p className="chat-feedback" role="status">{status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
-      {error && <p className="chat-feedback chat-error" role="alert">{error.message.startsWith("MAX:") ? error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</p>}
-      <form onSubmit={handleSubmit}>
-        <label className="sr-only" htmlFor="message">Wiadomość</label>
-        <input id="message" name="message" placeholder="Napisz wiadomość…" value={message} onChange={(event) => setMessage(event.target.value)} autoComplete="off" disabled={isBusy} />
-        <button type="submit" disabled={isBusy || !message.trim()}>{isBusy ? "Czekaj…" : "Ślij"}</button>
-      </form>
+        </form>
+        <div className="duel-info">
+          <p role="status">{dueling ? `Pojedynek trwa · ukończone wypowiedzi: ${turns}` : turns ? `Pojedynek zakończony · wypowiedzi: ${turns}` : "Pojedynek: odpowiadają sobie na zmianę, aż klikniesz Stop lub wystąpi błąd."}</p>
+          {dueling && <button className="stop-button" onClick={stopDuel}>Stop</button>}
+        </div>
+        <p className="usage-note">Każda odpowiedź zużywa limit API; przy płatnych modelach także środki. Pojedynek trwa do zatrzymania, a historia rośnie z każdą turą.</p>
+        {duelError && <p className="chat-feedback chat-error" role="alert">{duelError}</p>}
       </div>
-      <p className="footer-note">Tylko Ty, mrok i Twoje wiadomości.</p>
+      <div className="chat-grid">
+        <ChatPanel chat={openrouter} title="MAX · OpenRouter" dueling={dueling} />
+        <ChatPanel chat={google} title="MAX · Gemini" dueling={dueling} />
+      </div>
+      <p className="footer-note">Tylko Ty, mrok i dwa głosy z zaświatów.</p>
     </main>
-    </>
-  );
+  </>;
 }
