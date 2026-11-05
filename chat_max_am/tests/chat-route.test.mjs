@@ -15,7 +15,7 @@ assert.equal(diagnostics.length, 0);
 const user = (text, id = "u1") => ({ id, role: "user", parts: [{ type: "text", text }] });
 const history = [user("Mam na imię Ala."), { id: "a1", role: "assistant", parts: [{ type: "text", text: "Witaj w krypcie, Alu!" }] }, user("Jak mam na imię?", "u2")];
 
-async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model" }, failure) {
+async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model" }, failure, config = { openrouter: { enabled: true }, google: { enabled: true } }) {
   const calls = [];
   let streamError;
   const context = vm.createContext({ Response, process: { env } });
@@ -51,9 +51,13 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
       return (model) => ({ model, provider: "google" });
     });
   }, { context });
+  const configModule = new vm.SyntheticModule(["chatConfig"], function () {
+    this.setExport("chatConfig", config);
+  }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
     if (specifier === "ai") return ai;
+    if (specifier === "@/config/chat") return configModule;
     if (specifier === "@ai-sdk/google") return google;
     if (specifier === "@openrouter/ai-sdk-provider") return provider;
     throw new Error(`Unexpected import: ${specifier}`);
@@ -152,7 +156,7 @@ const duelModule = new vm.SourceTextModule(ts.transpileModule(duelSource, {
 }).outputText, { context: duelContext });
 await duelModule.link(() => { throw Error("Nieoczekiwany import"); });
 await duelModule.evaluate();
-const { runDuel } = duelModule.namespace;
+const { runDuel, createDuelPause } = duelModule.namespace;
 
 test("pojedynek: kolejność A-B-A, przekazanie odpowiedzi i stop bez następnego wywołania", async () => {
   const controller = new AbortController();
@@ -201,4 +205,53 @@ test("pojedynek: stop przerywa oczekiwanie między turami", async () => {
     onTurn: () => { setTimeout(() => controller.abort(), 10); },
   });
   assert.equal(calls, 1);
+});
+
+
+test("wyłączony dostawca: 403 i zero wywołań, nawet z kluczem", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    const app = await setup({ OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key", GEMINI_MODEL: "gemini-test-model" }, undefined,
+      { openrouter: { enabled: provider !== "openrouter" }, google: { enabled: provider !== "google" } });
+    const response = await app.post(history, { provider });
+    assert.equal(response.status, 403);
+    assert.match(await response.text(), /wyłączony/);
+    assert.equal(app.calls.length, 0);
+  }
+});
+
+test("pauza i kontynuacja: następna tura czeka i zachowuje rozmówcę", async () => {
+  const controller = new AbortController();
+  const gate = createDuelPause();
+  const calls = [];
+  let notifyPaused;
+  const paused = new Promise((resolve) => { notifyPaused = resolve; });
+  const respond = (name) => async (text) => { calls.push({ name, text }); return `Odpowiedź ${name}`; };
+  const running = runDuel({ initialPrompt: "test", responders: [respond("A"), respond("B")], signal: controller.signal,
+    waitForResume: gate.wait, pause: async () => {},
+    onTurn: (turn) => {
+      if (turn === 1) { gate.setPaused(true); notifyPaused(); }
+      if (turn === 2) controller.abort();
+    },
+  });
+  await paused;
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(calls.length, 1);
+  gate.setPaused(false);
+  await running;
+  assert.deepEqual(calls.map((call) => call.name), ["A", "B"]);
+  assert.match(calls[1].text, /Odpowiedź A/);
+});
+
+test("stop podczas pauzy kończy pętlę bez kolejnego wywołania", async () => {
+  const controller = new AbortController();
+  const gate = createDuelPause();
+  gate.setPaused(true);
+  let calls = 0;
+  const respond = async () => { calls += 1; return "Nie powinno się wykonać"; };
+  const running = runDuel({ initialPrompt: "test", responders: [respond, respond], signal: controller.signal,
+    waitForResume: gate.wait, pause: async () => {}, onTurn: () => {},
+  });
+  controller.abort();
+  await running;
+  assert.equal(calls, 0);
 });

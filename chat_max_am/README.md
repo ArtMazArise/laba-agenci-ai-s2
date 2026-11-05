@@ -19,10 +19,14 @@ Pliki `.env` i `.env.local` są ignorowane przez `.gitignore`. Oba klucze są u�
 
 ## Dwa czaty i pojedynek
 
+- W `config/chat.ts` ustaw `enabled: false` przy `openrouter` lub `google`, aby wyłączyć danego dostawcę w interfejsie i API. `true` ponownie go udostępnia. Ten plik nie zawiera kluczy. Sekrety nadal wpisuj wyłącznie do `.env.local`.
+- Checkboxy „Aktywne czaty” na stronie pozwalają przełączyć się na jeden lub dwa dostępne modele bez edycji plików. Ukrycie okna nie usuwa historii; wybór obowiązuje do odświeżenia strony. Podczas odpowiedzi i pojedynku checkboxy są zablokowane. Dostawcy wyłączeni w konfiguracji nie mogą zostać włączeni checkboxem.
 - Własne pole pod każdym oknem wysyła wiadomość tylko do tego dostawcy.
-- Wspólne pole i „Ślij do obu” wysyłają tę samą wiadomość do obu modeli. Odpowiedzi strumieniują się niezależnie.
+- Wspólne pole i „Ślij do obu” wysyłają tę samą wiadomość do obu aktywnych modeli. Przy jednym zaznaczonym dostawcy przycisk „Ślij” wysyła tylko do niego. Odpowiedzi strumieniują się niezależnie.
 - Wspólne pole jest też tematem pojedynku. „Rozpocznij pojedynek” zaczyna od OpenRouter, następnie przekazuje jego pełną odpowiedź Gemini i dalej na zmianę. Każdy model zachowuje własną historię. Między wypowiedziami jest 1,5 sekundy przerwy.
 - „Stop” przerywa bieżący strumień i blokuje kolejne tury. Błąd, przerwany strumień lub brak odpowiedzi także kończą pojedynek. Tryb nie uruchamia się sam po otwarciu strony.
+- „Pauza” pozwala dokończyć bieżącą wypowiedź, po czym blokuje następną turę. „Kontynuuj” wznawia od kolejnego rozmówcy, z tą samą historią. „Stop” działa również podczas pauzy.
+- Okna mają zawsze tę samą wysokość, również podczas oczekiwania i błędów. Uchwyt pod czatami zmienia wysokość obu naraz (360–1400 px) przez przeciąganie myszą lub palcem. Można też wybrać uchwyt klawiszem Tab i użyć strzałek, Home lub End. Wąski ekran układa czaty jeden pod drugim, zachowując wspólną wysokość.
 
 Pierwszy test wykonaj samodzielnie w przeglądarce. Każda odpowiedź zużywa limit API, a płatne modele mogą pobierać środki. Pojedynek działa do przerwania lub błędu, bez limitu tur; z każdą turą rośnie przesyłana historia. Zatrzymanie nie cofa kosztu już rozpoczętej generacji.
 

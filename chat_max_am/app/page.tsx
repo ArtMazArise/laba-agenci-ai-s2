@@ -2,9 +2,10 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent } from "react";
 
-import { runDuel } from "@/lib/duel";
+import { createDuelPause, runDuel } from "@/lib/duel";
+import { chatConfig } from "@/config/chat";
 
 const transports = {
   openrouter: new DefaultChatTransport({ api: "/api/chat", body: { provider: "openrouter" } }),
@@ -78,8 +79,10 @@ function ChatPanel({ chat, title, dueling }: { chat: MaxChat; title: string; due
         {item.parts.map((part, index) => part.type === "text" ? <span key={index}>{part.text}</span> : null)}
       </div>)}
     </section>
-    {chat.isBusy && <p className="chat-feedback" role="status">{chat.status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
-    {chat.error && <p className="chat-feedback chat-error" role="alert">{chat.error.message.startsWith("MAX:") ? chat.error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</p>}
+    <div className="panel-feedback">
+      {chat.isBusy && <p className="chat-feedback" role="status">{chat.status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
+      {chat.error && <p className="chat-feedback chat-error" role="alert">{chat.error.message.startsWith("MAX:") ? chat.error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</p>}
+    </div>
     <form onSubmit={handleSubmit}>
       <label className="sr-only" htmlFor={`draft-${chat.id}`}>Wiadomość do {title}</label>
       <input id={`draft-${chat.id}`} placeholder="Napisz do tego MAX-a…" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={chat.isBusy || dueling} autoComplete="off" />
@@ -94,10 +97,17 @@ export default function Home() {
   const google = useMaxChat("google");
   const [message, setMessage] = useState("");
   const [dueling, setDueling] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [selection, setActive] = useState({ openrouter: chatConfig.openrouter.enabled, google: chatConfig.google.enabled });
+  const active = { openrouter: selection.openrouter && chatConfig.openrouter.enabled, google: selection.google && chatConfig.google.enabled };
+  const [chatHeight, setChatHeight] = useState(600);
+  const resizeStart = useRef<{ pointerId: number; y: number; height: number } | null>(null);
+  const pauseControl = useRef<ReturnType<typeof createDuelPause> | null>(null);
   const [turns, setTurns] = useState(0);
   const [duelError, setDuelError] = useState("");
   const duelController = useRef<AbortController | null>(null);
   const busy = openrouter.isBusy || google.isBusy;
+  const activeCount = Number(active.openrouter) + Number(active.google);
 
   useEffect(() => () => {
     duelController.current?.abort();
@@ -107,11 +117,11 @@ export default function Home() {
 
   function sendBoth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!message.trim() || busy || duelController.current) return;
+    if (!message.trim() || busy || duelController.current || activeCount === 0) return;
     const text = message.trim();
     setMessage("");
-    void openrouter.sendMessage({ text });
-    void google.sendMessage({ text });
+    if (active.openrouter) void openrouter.sendMessage({ text });
+    if (active.google) void google.sendMessage({ text });
   }
 
   function stopDuel() {
@@ -121,10 +131,37 @@ export default function Home() {
     // Kontroler zostaje zajęty do zakończenia pętli, więc nie powstaną dwie pętle.
   }
 
+  function togglePause() {
+    if (!duelController.current) return;
+    pauseControl.current?.setPaused(!paused);
+    setPaused(!paused);
+  }
+
+  function beginResize(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeStart.current = { pointerId: event.pointerId, y: event.clientY, height: chatHeight };
+  }
+
+  function resizeChats(event: PointerEvent<HTMLDivElement>) {
+    const start = resizeStart.current;
+    if (start?.pointerId !== event.pointerId) return;
+    setChatHeight(Math.round(Math.min(1400, Math.max(360, start.height + event.clientY - start.y))));
+  }
+
+  function endResize(event: PointerEvent<HTMLDivElement>) {
+    if (resizeStart.current?.pointerId !== event.pointerId) return;
+    resizeStart.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
   async function startDuel() {
-    if (!message.trim() || busy || duelController.current) return;
+    if (!message.trim() || busy || duelController.current || activeCount !== 2) return;
     const controller = new AbortController();
     duelController.current = controller;
+    const gate = createDuelPause();
+    pauseControl.current = gate;
+    setPaused(false);
     setDueling(true);
     setTurns(0);
     setDuelError("");
@@ -138,13 +175,16 @@ export default function Home() {
         responders: [openrouter.reply, google.reply],
         signal: controller.signal,
         onTurn: setTurns,
+        waitForResume: gate.wait,
       });
     } catch {
       if (!controller.signal.aborted) setDuelError("Pojedynek zatrzymany: błąd lub brak odpowiedzi. Sprawdź komunikaty w oknach czatu.");
     } finally {
       if (duelController.current === controller) {
         duelController.current = null;
+        pauseControl.current = null;
         setDueling(false);
+        setPaused(false);
       }
     }
   }
@@ -158,28 +198,39 @@ export default function Home() {
       <header>
         <p className="eyebrow"><span /> PO DRUGIEJ STRONIE EKRANU</p>
         <h1>Jestem <span>MAX</span>, od AM</h1>
-        <p className="subtitle">Dwa MAX-y. Jedna krypta. Napisz do jednego, obu albo rozpocznij pojedynek.</p>
+        <p className="subtitle">Twoja krypta. Wybierz jednego MAX-a lub zaproś obu do pojedynku.</p>
       </header>
       <div className="arena-controls">
+        <fieldset className="provider-toggles" disabled={busy || dueling}>
+          <legend>Aktywne czaty</legend>
+          <label><input type="checkbox" checked={active.openrouter} disabled={!chatConfig.openrouter.enabled} onChange={(event) => setActive((previous) => ({ ...previous, openrouter: event.target.checked }))} /> OpenRouter{!chatConfig.openrouter.enabled && " · wyłączony w konfiguracji"}</label>
+          <label><input type="checkbox" checked={active.google} disabled={!chatConfig.google.enabled} onChange={(event) => setActive((previous) => ({ ...previous, google: event.target.checked }))} /> Gemini{!chatConfig.google.enabled && " · wyłączony w konfiguracji"}</label>
+        </fieldset>
         <form className="shared-form" onSubmit={sendBoth}>
           <label className="sr-only" htmlFor="shared-message">Wiadomość do obu lub temat pojedynku</label>
-          <input id="shared-message" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Wiadomość do obu lub temat pojedynku…" disabled={busy || dueling} autoComplete="off" />
+          <input id="shared-message" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={activeCount === 2 ? "Wiadomość do obu lub temat pojedynku…" : "Napisz do aktywnego MAX-a…"} disabled={busy || dueling || activeCount === 0} autoComplete="off" />
           <div className="arena-actions">
-            <button type="submit" disabled={!message.trim() || busy || dueling}>Ślij do obu</button>
-            <button className="secondary-button" type="button" onClick={() => void startDuel()} disabled={!message.trim() || busy || dueling}>Rozpocznij pojedynek</button>
+            <button type="submit" disabled={!message.trim() || busy || dueling || activeCount === 0}>{activeCount === 2 ? "Ślij do obu" : "Ślij"}</button>
+            {activeCount === 2 && <button className="secondary-button" type="button" onClick={() => void startDuel()} disabled={!message.trim() || busy || dueling}>Rozpocznij pojedynek</button>}
           </div>
         </form>
         <div className="duel-info">
-          <p role="status">{dueling ? `Pojedynek trwa · ukończone wypowiedzi: ${turns}` : turns ? `Pojedynek zakończony · wypowiedzi: ${turns}` : "Pojedynek: odpowiadają sobie na zmianę, aż klikniesz Stop lub wystąpi błąd."}</p>
-          {dueling && <button className="stop-button" onClick={stopDuel}>Stop</button>}
+          <p role="status">{dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · wypowiedzi: ${turns}` : "Pojedynek: odpowiadają sobie na zmianę, aż klikniesz Stop lub wystąpi błąd."}</p>
+          {dueling && <div className="arena-actions"><button className="secondary-button" onClick={togglePause}>{paused ? "Kontynuuj" : "Pauza"}</button><button className="stop-button" onClick={stopDuel}>Stop</button></div>}
         </div>
         <p className="usage-note">Każda odpowiedź zużywa limit API; przy płatnych modelach także środki. Pojedynek trwa do zatrzymania, a historia rośnie z każdą turą.</p>
         {duelError && <p className="chat-feedback chat-error" role="alert">{duelError}</p>}
       </div>
-      <div className="chat-grid">
-        <ChatPanel chat={openrouter} title="MAX · OpenRouter" dueling={dueling} />
-        <ChatPanel chat={google} title="MAX · Gemini" dueling={dueling} />
+      <div className="chat-grid" data-count={activeCount} style={{ "--chat-height": `${chatHeight}px` } as CSSProperties}>
+        {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" dueling={dueling} />}
+        {active.google && <ChatPanel chat={google} title="MAX · Gemini" dueling={dueling} />}
       </div>
+      {activeCount > 0 && <div className="chat-resizer" role="slider" tabIndex={0} aria-label="Wysokość czatów" aria-orientation="vertical" aria-valuemin={360} aria-valuemax={1400} aria-valuenow={chatHeight} aria-valuetext={`${chatHeight} pikseli`} onPointerDown={beginResize} onPointerMove={resizeChats} onPointerUp={endResize} onPointerCancel={endResize} onLostPointerCapture={() => { resizeStart.current = null; }} onKeyDown={(event) => {
+        if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+          event.preventDefault();
+          setChatHeight((height) => event.key === "Home" ? 360 : event.key === "End" ? 1400 : Math.min(1400, Math.max(360, height + (event.key === "ArrowUp" ? 20 : -20))));
+        }
+      }}><span />Przeciągnij, aby zmienić wysokość {activeCount === 2 ? "obu czatów" : "czatu"} · {chatHeight} px</div>}
       <p className="footer-note">Tylko Ty, mrok i dwa głosy z zaświatów.</p>
     </main>
   </>;
