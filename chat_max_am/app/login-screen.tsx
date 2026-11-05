@@ -51,7 +51,6 @@ export default function LoginScreen({ unavailable, learningMode = false }: { una
       </form>
       {(unavailable || error) && <p className="chat-feedback chat-error" role="alert">{unavailable || error}</p>}
       {seconds > 0 && <p className="chat-feedback" role="status">Ponowna próba za {Math.ceil(seconds / 60)} min.</p>}
-      <p className="usage-note">Po błędnym haśle aktywne AI wymyślają żarty — zużywa to ich limit API.</p>
       {pending && <p className="chat-feedback" role="status">Sprawdzam hasło. Po pomyłce przywołuję żarty MAX-ów…</p>}
       {jokes.length > 0 && <div className="login-jokes" aria-live="polite">{jokes.map((joke) => <p key={joke.name}><strong>{joke.name}{joke.generated ? " · AI" : " · komunikat"}:</strong> {joke.text}</p>)}</div>}
     </div>

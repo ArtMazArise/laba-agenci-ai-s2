@@ -29,6 +29,10 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
     chat: "../app/api/chat/route.ts",
   };
   class PreconditionFailed extends Error {}
+  class MockAPICallError extends Error {
+    constructor(statusCode) { super("PRIVATE_PROVIDER_DETAIL"); this.statusCode = statusCode; }
+    static isInstance(error) { return error instanceof MockAPICallError; }
+  }
   async function load(name) {
     if (modules.has(name)) return modules.get(name);
     let module;
@@ -69,7 +73,13 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
       if (!exports) throw Error(`Unexpected import: ${name}`);
       module = new vm.SyntheticModule(exports, function () {
         for (const key of exports) this.setExport(key,
-          key === "generateText" ? async (options) => { jokeCalls.push(options); return { text: "Żart z atrapy AI" }; }
+          key === "APICallError" ? MockAPICallError
+          : key === "generateText" ? async (options) => {
+            jokeCalls.push(options);
+            if (env.TEST_JOKE_FAILURE === "429") throw new MockAPICallError(429);
+            if (env.TEST_JOKE_FAILURE === "empty-length") return { text: "", finishReason: "length" };
+            return { text: "Żart z atrapy AI", finishReason: "stop" };
+          }
           : key.startsWith("create") ? () => (model) => ({ model }) : unexpectedModel);
       }, { context });
     }
@@ -288,4 +298,20 @@ test("Vercel: brak tokenu lub awaria Blob blokują dostęp", async (t) => {
   failed.blobState.unavailable = true;
   assert.equal((await failed.login(password)).status, 503);
   assert.equal(failed.modelCalls(), 0);
+});
+
+
+test("żart OpenRouter ma większy budżet; brak tekstu i HTTP 429 mają odrębne komunikaty", async (t) => {
+  const env = { OPENROUTER_API_KEY: "mock-router-key", OPENROUTER_MODEL: "mock-router-model", GEMINI_ENABLED: "false" };
+  const app = await setup(t, env);
+  assert.equal((await app.login("wrong")).status, 401);
+  assert.equal(app.jokeCalls[0].maxOutputTokens, 1024);
+  const limited = await setup(t, { ...env, TEST_JOKE_FAILURE: "empty-length" });
+  const empty = await (await limited.login("wrong")).json();
+  assert.equal(empty.jokes[0].generated, false);
+  assert.match(empty.jokes[0].text, /limit tokenów/);
+  const throttled = await setup(t, { ...env, TEST_JOKE_FAILURE: "429" });
+  const error = await (await throttled.login("wrong")).json();
+  assert.match(error.jokes[0].text, /limit zapytań/);
+  assert.doesNotMatch(error.jokes[0].text, /PRIVATE_PROVIDER_DETAIL|mock-router-key/);
 });
