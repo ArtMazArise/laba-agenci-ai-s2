@@ -15,7 +15,7 @@ assert.equal(diagnostics.length, 0);
 const user = (text, id = "u1") => ({ id, role: "user", parts: [{ type: "text", text }] });
 const history = [user("Mam na imię Ala."), { id: "a1", role: "assistant", parts: [{ type: "text", text: "Witaj w krypcie, Alu!" }] }, user("Jak mam na imię?", "u2")];
 
-async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model" }, failure, config = { openrouter: { enabled: true }, google: { enabled: true } }) {
+async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model" }, failure) {
   const calls = [];
   let streamError;
   const context = vm.createContext({ Response, process: { env } });
@@ -51,13 +51,9 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
       return (model) => ({ model, provider: "google" });
     });
   }, { context });
-  const configModule = new vm.SyntheticModule(["chatConfig"], function () {
-    this.setExport("chatConfig", config);
-  }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
     if (specifier === "ai") return ai;
-    if (specifier === "@/config/chat") return configModule;
     if (specifier === "@ai-sdk/google") return google;
     if (specifier === "@openrouter/ai-sdk-provider") return provider;
     throw new Error(`Unexpected import: ${specifier}`);
@@ -210,8 +206,8 @@ test("pojedynek: stop przerywa oczekiwanie między turami", async () => {
 
 test("wyłączony dostawca: 403 i zero wywołań, nawet z kluczem", async () => {
   for (const provider of ["openrouter", "google"]) {
-    const app = await setup({ OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key", GEMINI_MODEL: "gemini-test-model" }, undefined,
-      { openrouter: { enabled: provider !== "openrouter" }, google: { enabled: provider !== "google" } });
+    const app = await setup({ OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key", GEMINI_MODEL: "gemini-test-model",
+      OPENROUTER_ENABLED: provider === "openrouter" ? "false" : "true", GEMINI_ENABLED: provider === "google" ? "false" : "true" });
     const response = await app.post(history, { provider });
     assert.equal(response.status, 403);
     assert.match(await response.text(), /wyłączony/);
@@ -254,4 +250,29 @@ test("stop podczas pauzy kończy pętlę bez kolejnego wywołania", async () => 
   controller.abort();
   await running;
   assert.equal(calls, 0);
+});
+
+
+test("pojedynek od Gemini: kolejność B-A-B i poprawne podpisy rozmówców", async () => {
+  const controller = new AbortController();
+  const calls = [];
+  const respond = (name) => async (text) => { calls.push({ name, text }); return `Odpowiedź ${name}`; };
+  await runDuel({ initialPrompt: "Temat z pola Gemini", responders: [respond("OpenRouter"), respond("Gemini")],
+    startIndex: 1, signal: controller.signal, pause: async () => {},
+    onTurn: (turn) => { if (turn === 3) controller.abort(); },
+  });
+  assert.deepEqual(calls.map((call) => call.name), ["Gemini", "OpenRouter", "Gemini"]);
+  assert.match(calls[0].text, /Temat z pola Gemini/);
+  assert.match(calls[1].text, /MAX Gemini powiedział/);
+  assert.match(calls[2].text, /MAX OpenRouter powiedział/);
+});
+
+test("flagi env są niewrażliwe na wielkość liter; wyłączenie działa bez klucza", async () => {
+  const app = await setup({ OPENROUTER_ENABLED: " FALSE ", GEMINI_ENABLED: "false" });
+  for (const provider of ["openrouter", "google"]) {
+    const response = await app.post(history, { provider });
+    assert.equal(response.status, 403);
+    assert.match(await response.text(), /\.env.local/);
+  }
+  assert.equal(app.calls.length, 0);
 });

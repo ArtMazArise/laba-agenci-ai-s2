@@ -1,6 +1,5 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { chatConfig } from "@/config/chat";
 import {
   APICallError,
   convertToModelMessages,
@@ -41,8 +40,9 @@ export async function POST(request: Request) {
   if (provider !== "openrouter" && provider !== "google") {
     return new Response("MAX: Nieznany dostawca modelu.", { status: 400 });
   }
-  if (!chatConfig[provider].enabled) {
-    return new Response("MAX: Ten dostawca jest wyłączony w config/chat.ts.", { status: 403 });
+  const enabled = provider === "google" ? process.env.GEMINI_ENABLED : process.env.OPENROUTER_ENABLED;
+  if (enabled?.trim().toLowerCase() === "false") {
+    return new Response("MAX: Ten dostawca jest wyłączony w .env.local.", { status: 403 });
   }
   const duel = body?.mode === "duel";
   const apiKey = (provider === "google" ? process.env.GOOGLE_GENERATIVE_AI_API_KEY : process.env.OPENROUTER_API_KEY)?.trim();

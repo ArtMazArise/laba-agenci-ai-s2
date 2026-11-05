@@ -37,11 +37,12 @@ function waitBetweenTurns(signal: AbortSignal) {
 }
 
 // Jedna odpowiedź naraz. Następna tura dopiero po ukończeniu poprzedniej.
-export async function runDuel({ initialPrompt, responders, signal, onTurn, pause = waitBetweenTurns, waitForResume = async () => {} }: {
+export async function runDuel({ initialPrompt, responders, signal, onTurn, startIndex = 0, pause = waitBetweenTurns, waitForResume = async () => {} }: {
   initialPrompt: string;
   responders: [Responder, Responder];
   signal: AbortSignal;
   onTurn: (turn: number) => void;
+  startIndex?: 0 | 1;
   pause?: (signal: AbortSignal) => Promise<void>;
   waitForResume?: (signal: AbortSignal) => Promise<void>;
 }) {
@@ -50,7 +51,7 @@ export async function runDuel({ initialPrompt, responders, signal, onTurn, pause
   while (!signal.aborted) {
     await waitForResume(signal);
     if (signal.aborted) return;
-    const index = turn % 2;
+    const index = (turn + startIndex) % 2;
     const reply = await responders[index](prompt);
     if (signal.aborted) return;
     if (!reply?.trim()) throw new Error("Pojedynek zatrzymany: model nie zwrócił pełnej odpowiedzi. Sprawdź komunikat w jego oknie.");
