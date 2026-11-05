@@ -19,6 +19,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   const modules = new Map();
   let modelCalls = 0;
   const jokeCalls = [];
+  const providerCalls = [];
   const unexpectedModel = () => { modelCalls += 1; throw Error("Model must not be called"); };
   const sources = {
     "@/lib/auth": "../lib/auth.ts",
@@ -83,7 +84,10 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
             if (env.TEST_JOKE_FAILURE === "too-long") return { text: JSON.stringify({ joke: "x".repeat(321) }), finishReason: "stop" };
             return { text: JSON.stringify({ joke: "Żart z atrapy AI" }), finishReason: "stop" };
           }
-          : key.startsWith("create") ? () => (model) => ({ model }) : unexpectedModel);
+          : key.startsWith("create") ? () => (model) => {
+            providerCalls.push({ provider: key === "createOpenRouter" ? "openrouter" : "google", model });
+            return { model };
+          } : unexpectedModel);
       }, { context });
     }
     modules.set(name, module);
@@ -99,7 +103,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
     return new Request(`http://localhost/api/${route}`, { method: "POST", headers: { "content-type": "application/json", origin, cookie }, body: JSON.stringify(body) });
   }
   return {
-    auth, directory, env, modelCalls: () => modelCalls, jokeCalls, blobState,
+    auth, directory, env, modelCalls: () => modelCalls, jokeCalls, providerCalls, blobState,
     login: (value, origin, previousJokeProvider) => login(request("login", { password: value, previousJokeProvider }, "", origin)),
     logout: (cookie) => logout(request("logout", {}, cookie)),
     chat: (cookie = "", provider = "openrouter", origin) => chat(request("chat", { provider, messages: [] }, cookie, origin)),
@@ -371,4 +375,22 @@ test("Gemini HTTP 503 pokazuje przejściową niedostępność bez ponowień", as
   assert.equal(body.jokes[0].generated, false);
   assert.match(body.jokes[0].text, /chwilowo przeciążony lub niedostępny/);
   assert.equal(app.jokeCalls.length, 1);
+});
+
+test("OpenRouter false: pierwsze losowanie i następne próby wywołują wyłącznie Gemini", async (t) => {
+  for (const disabled of ["false", " FALSE "]) {
+    const app = await setup(t, {
+      OPENROUTER_ENABLED: disabled, OPENROUTER_API_KEY: "mock-router-key", OPENROUTER_MODEL: "mock-router-model",
+      GOOGLE_GENERATIVE_AI_API_KEY: "mock-google-key", GEMINI_MODEL: "mock-google-model",
+    });
+    for (const previous of [undefined, "google", "openrouter"]) {
+      const response = await (await app.login("wrong", undefined, previous)).json();
+      assert.equal(response.jokeProvider, "google");
+      assert.equal(response.jokes.length, 1);
+      assert.equal(response.jokes[0].generated, true);
+    }
+    assert.equal(app.providerCalls.length, 3);
+    assert.ok(app.providerCalls.every((call) => call.provider === "google"));
+    assert.ok(app.jokeCalls.every((call) => call.model.model === "mock-google-model"));
+  }
 });
