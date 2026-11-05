@@ -37,7 +37,7 @@ export default function Home() {
     if (conversation) conversation.scrollTop = conversation.scrollHeight;
   }, [messages, status]);
 
-  function sendMessage(event: FormEvent<HTMLFormElement>) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = message.trim();
     if (!text || isBusy) return;
@@ -72,7 +72,7 @@ export default function Home() {
       </section>
       {isBusy && <p className="chat-feedback" role="status">{status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
       {error && <p className="chat-feedback chat-error" role="alert">{error.message.startsWith("MAX:") ? error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</p>}
-      <form onSubmit={sendMessage}>
+      <form onSubmit={handleSubmit}>
         <label className="sr-only" htmlFor="message">Wiadomość</label>
         <input id="message" name="message" placeholder="Napisz wiadomość…" value={message} onChange={(event) => setMessage(event.target.value)} autoComplete="off" disabled={isBusy} />
         <button type="submit" disabled={isBusy || !message.trim()}>{isBusy ? "Czekaj…" : "Ślij"}</button>
