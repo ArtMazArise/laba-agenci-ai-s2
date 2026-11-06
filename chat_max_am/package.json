@@ -1,6 +1,6 @@
 {
   "name": "max-chatbot",
-  "version": "0.1.0",
+  "version": "0.2.5",
   "private": true,
   "dependencies": {
     "@vercel/blob": "2.8.2",
@@ -20,7 +20,7 @@
   },
   "scripts": {
     "publish:prepare": "node scripts/prepare-publish.mjs",
-    "test": "node --experimental-vm-modules tests/chat-route.test.mjs && node --experimental-vm-modules tests/auth.test.mjs",
+    "test": "node --experimental-vm-modules tests/chat-route.test.mjs && node --experimental-vm-modules tests/auth.test.mjs && node --experimental-vm-modules tests/chat-tools.test.mjs",
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0"

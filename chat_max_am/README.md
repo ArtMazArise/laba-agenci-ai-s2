@@ -80,3 +80,19 @@ Automatyczne testy używają oddzielnego katalogu tymczasowego, sztucznych hase�
 ## Sprawdzenie bez płatnych wywołań
 
 `npm test` sprawdza konfigurację obu dostawców, historię, błędy oraz naprzemienne tury, przerwanie i zatrzymywanie po błędzie. Testy podstawiają atrapę SDK oraz własne zmienne środowiskowe: nie czytają `.env.local` i nie łączą się z modelami. Pełne sprawdzenie typów po instalacji: `npx tsc --noEmit`.
+
+## Oznaczenie wersji
+
+Drobna stopka na ekranie hasła i pod czatem pokazuje wersję z `package.json`, datę w strefie `Europe/Warsaw` oraz „Lokalnie” / „Vercel · produkcja” / „Vercel · podgląd”. Lokalnie data pochodzi z najnowszej modyfikacji plików źródłowych; na Vercel z ostatniego commita aplikacji. Gdy historia Git jest niedostępna podczas budowania, stopka jawnie pokazuje datę „build”. Zmiana lokalnych plików nie aktualizuje wdrożenia Vercel — wymaga commita, push i nowego wdrożenia.
+
+## Wspólne pytania i kopiowanie
+
+`CHAT_TEST_QUESTIONS` to tablica JSON z tekstami pytań. Przykład z sześcioma pytaniami znajduje się w `.env.example`. Lokalnie otocz cały JSON pojedynczymi apostrofami, tak jak w przykładzie; w panelu Vercel wklej samą tablicę JSON jako Config. Po zmianie konfiguracji lokalnie uruchom serwer ponownie; na Vercel wykonaj nowe wdrożenie.
+
+Pole obok checkboxów pozwala wybrać podpowiedź, zmienić jej treść lub wpisać własną wiadomość. Pusta zmienna lub `[]` usuwa podpowiedzi, ale pozostawia możliwość pisania. Mały „×” czyści pole. „Wyślij” kieruje tę samą wiadomość równocześnie do zaznaczonych czatów; niezaznaczone modele nie otrzymują zapytań. Podczas pojedynku lub trwającej odpowiedzi wysyłanie jest zablokowane.
+
+„Kopiuj” przy wypowiedzi zapisuje w schowku tekst `Autor: wiadomość`. „Kopiuj czat” w nagłówku kopiuje wszystkie tekstowe wypowiedzi w kolejności rozmowy, oddzielone linią myślników. Nadmiar pustych linii jest usuwany z widoku i kopiowanego tekstu. Kolejne wypowiedzi w widoku rozdziela przerywana linia. Kopiowanie pomija części rozumowania i puste wiadomości. Przeglądarka musi udostępniać schowek (localhost lub HTTPS); odmowa jest sygnalizowana na przycisku.
+
+„Kopiuj całość” przy wspólnych pytaniach łączy obie historie: wspólna wiadomość pojawia się raz, potem odpowiedź OpenRouter i Gemini. Brak odpowiedzi któregoś modelu pomija jego wpis. Kolejne pytania zachowują kolejność; powtórzone pytanie wysłane ponownie jest osobną pozycją. Przycisk kopiuje aktualny tekst rozmów, również gdy dany czat jest obecnie ukryty checkboxem.
+
+Pod „Kopiuj czat” znajduje się „Wyczyść” usuwające historię i błąd tego modelu. Pod „Kopiuj całość” jest „Wyczyść całość”, które usuwa historie obu modeli (również ukryte), błędy i licznik pojedynku. Czyszczenie jest zablokowane podczas odpowiedzi lub aktywnego pojedynku; najpierw użyj „Stop”. Niewysłane szkice i zawartość schowka pozostają bez zmian.

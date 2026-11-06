@@ -18,7 +18,9 @@ const history = [user("Mam na imię Ala."), { id: "a1", role: "assistant", parts
 async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model" }, failure) {
   const calls = [];
   let streamError;
-  const context = vm.createContext({ Response, process: { env } });
+  let instant = Date.parse("2026-11-05T23:30:00Z");
+  class TestDate extends Date { constructor() { super(instant); } }
+  const context = vm.createContext({ Response, process: { env }, Date: TestDate });
   class MockAPIError extends Error {
     constructor(statusCode) { super("SECRET_PROVIDER_DETAILS"); this.statusCode = statusCode; }
     static isInstance(error) { return error instanceof MockAPIError; }
@@ -70,6 +72,7 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
     })),
     rawPost: route.namespace.POST,
     calls,
+    advanceTime: (milliseconds) => { instant += milliseconds; },
     streamError: (code) => streamError(code ? new MockAPIError(code) : new Error("SECRET_PROVIDER_DETAILS")),
   };
 }
@@ -340,4 +343,17 @@ test("Stop podczas automatycznej pauzy nie uruchamia kolejnej partii", async () 
     },
   });
   assert.equal(calls, 2);
+});
+
+test("oba modele dostają świeży czas Warszawy przy każdym zapytaniu, również po zmianie dnia UTC", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    const app = await setup({ OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key", GEMINI_MODEL: "gemini-test-model" });
+    await app.post(history, { provider });
+    assert.match(app.calls[0].system, /Europe\/Warsaw/);
+    assert.match(app.calls[0].system, /6 listopada 2026/);
+    assert.match(app.calls[0].system, /00:30:00/);
+    app.advanceTime(60_000);
+    await app.post(history, { provider });
+    assert.match(app.calls[1].system, /00:31:00/);
+  }
 });

@@ -7,6 +7,9 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type P
 import { createDuelPause, runDuel } from "@/lib/duel";
 import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
+import BuildInfo, { type AppInfo } from "./build-info";
+import CopyButton from "./copy-button";
+import { broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -33,9 +36,17 @@ function useMaxChat(provider: "openrouter" | "google") {
   return {
     ...chat,
     isBusy: chat.status === "submitted" || chat.status === "streaming",
+    clearConversation() {
+      chat.setMessages([]);
+      chat.clearError();
+      lastReply.current = null;
+    },
+    async sendText(text: string, sharedTurnId?: string, sentAt = Date.now()) {
+      await chat.sendMessage({ text, metadata: { sentAt, ...(sharedTurnId ? { sharedTurnId } : {}) } });
+    },
     async reply(text: string) {
       lastReply.current = null;
-      await chat.sendMessage({ text }, { body: { mode: "duel" } });
+      await chat.sendMessage({ text, metadata: { sentAt: Date.now() } }, { body: { mode: "duel" } });
       return lastReply.current;
     },
   };
@@ -62,17 +73,17 @@ function ChatPanel({ chat, title, dueling, canDuel, onStartDuel }: {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft.trim() || chat.isBusy || dueling) return;
-    void chat.sendMessage({ text: draft.trim() });
+    void chat.sendText(draft.trim());
     setDraft("");
   }
 
   return <div className="chat-panel">
-    <div className="chat-topbar"><span><Skull /> {title}</span><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span></div>
+    <div className="chat-topbar"><span><Skull /> {title}</span><div className="chat-topbar-actions"><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span><div className="copy-clear-controls"><CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button></div></div></div>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
-      {chat.messages.map((item) => <div className={`message message-${item.role}`} key={item.id}>
-        <span className="message-author">{item.role === "user" ? "Wiadomość" : title}</span>
-        {item.parts.map((part, index) => part.type === "text" ? <span key={index}>{part.text}</span> : null)}
-      </div>)}
+      {chat.messages.map((item) => <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
+        <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}</span><CopyButton text={messageText(item).trim() ? formatMessage(item, title) : ""} /></div>
+        <span>{messageText(item)}</span>
+      </div></div>)}
     </section>
     <div className="panel-feedback">
       {chat.isBusy && <p className="chat-feedback" role="status">{chat.status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
@@ -91,12 +102,16 @@ function ChatPanel({ chat, title, dueling, canDuel, onStartDuel }: {
   </div>;
 }
 
-export default function ChatArena({ enabled, roundsPerBatch = 5 }: { enabled: EnabledProviders; roundsPerBatch?: number }) {
+export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQuestions = { questions: [], invalid: false } }: { enabled: EnabledProviders; roundsPerBatch?: number; appInfo: AppInfo; testQuestions?: { questions: string[]; invalid: boolean } }) {
   const openrouter = useMaxChat("openrouter");
   const google = useMaxChat("google");
   const [dueling, setDueling] = useState(false);
   const [paused, setPaused] = useState(false);
   const [batchQuestion, setBatchQuestion] = useState(false);
+  const [sharedDraft, setSharedDraft] = useState("");
+  const [sendingShared, setSendingShared] = useState(false);
+  const sharedSending = useRef(false);
+  const sharedInput = useRef<HTMLInputElement>(null);
   const [selection, setActive] = useState(enabled);
   const active = { openrouter: selection.openrouter && enabled.openrouter, google: selection.google && enabled.google };
   const [chatHeight, setChatHeight] = useState(600);
@@ -107,6 +122,34 @@ export default function ChatArena({ enabled, roundsPerBatch = 5 }: { enabled: En
   const duelController = useRef<AbortController | null>(null);
   const busy = openrouter.isBusy || google.isBusy;
   const activeCount = Number(active.openrouter) + Number(active.google);
+  const sharedDisabled = busy || dueling || sendingShared || activeCount === 0;
+
+  function clearAllConversations() {
+    if (busy || duelController.current || sharedSending.current) return;
+    openrouter.clearConversation();
+    google.clearConversation();
+    setTurns(0);
+    setDuelError("");
+    setBatchQuestion(false);
+    setPaused(false);
+  }
+
+  async function sendShared(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!sharedDraft.trim() || sharedDisabled || sharedSending.current) return;
+    sharedSending.current = true;
+    setSendingShared(true);
+    const text = sharedDraft.trim();
+    const sharedTurnId = crypto.randomUUID();
+    const sentAt = Date.now();
+    setSharedDraft("");
+    try {
+      await broadcastMessage(text, active, {
+        openrouter: (value) => openrouter.sendText(value, sharedTurnId, sentAt),
+        google: (value) => google.sendText(value, sharedTurnId, sentAt),
+      });
+    } finally { sharedSending.current = false; setSendingShared(false); }
+  }
 
   useEffect(() => () => {
     duelController.current?.abort();
@@ -147,7 +190,7 @@ export default function ChatArena({ enabled, roundsPerBatch = 5 }: { enabled: En
   }
 
   function startDuel(provider: Provider, text: string): boolean {
-    if (!text.trim() || busy || duelController.current || activeCount !== 2) return false;
+    if (!text.trim() || busy || sharedSending.current || duelController.current || activeCount !== 2) return false;
     const controller = new AbortController();
     duelController.current = controller;
     const gate = createDuelPause();
@@ -198,15 +241,29 @@ export default function ChatArena({ enabled, roundsPerBatch = 5 }: { enabled: En
         <p className="subtitle">Twoja krypta. Wybierz jednego MAX-a lub zaproś obu do pojedynku.</p>
       </header>
       <div className="arena-controls">
-        <fieldset className="provider-toggles" disabled={busy || dueling}>
+        <fieldset className="provider-toggles" disabled={busy || dueling || sendingShared}>
           <legend>Aktywne czaty</legend>
           <label><input type="checkbox" checked={active.openrouter} disabled={!enabled.openrouter} onChange={(event) => setActive((previous) => ({ ...previous, openrouter: event.target.checked }))} /> OpenRouter{!enabled.openrouter && " · wyłączony w konfiguracji"}</label>
           <label><input type="checkbox" checked={active.google} disabled={!enabled.google} onChange={(event) => setActive((previous) => ({ ...previous, google: event.target.checked }))} /> Gemini{!enabled.google && " · wyłączony w konfiguracji"}</label>
         </fieldset>
+        <form className="shared-composer" onSubmit={(event) => void sendShared(event)}>
+          <label className="sr-only" htmlFor="shared-question">Wiadomość do zaznaczonych czatów</label>
+          <div className="question-combo">
+            <input ref={sharedInput} id="shared-question" list={testQuestions.questions.length ? "test-questions" : undefined} value={sharedDraft} onChange={(event) => setSharedDraft(event.target.value)} placeholder={testQuestions.questions.length ? "Wybierz pytanie lub wpisz wiadomość…" : "Wpisz wiadomość do zaznaczonych czatów…"} disabled={sharedDisabled} autoComplete="off" />
+            {sharedDraft && <button type="button" className="clear-question" aria-label="Wyczyść wiadomość" title="Wyczyść" disabled={sharedDisabled} onClick={() => { setSharedDraft(""); sharedInput.current?.focus(); }}>×</button>}
+          </div>
+          {testQuestions.questions.length > 0 && <datalist id="test-questions">{testQuestions.questions.map((question) => <option key={question} value={question} />)}</datalist>}
+          <button type="submit" disabled={sharedDisabled || !sharedDraft.trim()}>{sendingShared ? "Czekaj…" : "Wyślij"}</button>
+        </form>
+        <div className="copy-clear-controls">
+          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages)} label="Kopiuj całość" />
+          <button type="button" className="copy-button clear-chat-button" disabled={busy || dueling || sendingShared || (!openrouter.messages.length && !google.messages.length && !openrouter.error && !google.error && !turns && !duelError)} onClick={clearAllConversations}>Wyczyść całość</button>
+        </div>
+        {testQuestions.invalid && <p className="questions-error" role="alert">Lista pytań w CHAT_TEST_QUESTIONS ma nieprawidłowy format JSON. Nadal możesz wpisać własną wiadomość.</p>}
       </div>
       <div className="chat-grid" data-count={activeCount} style={{ "--chat-height": `${chatHeight}px` } as CSSProperties}>
-        {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" dueling={dueling} canDuel={activeCount === 2 && !busy} onStartDuel={(text) => startDuel("openrouter", text)} />}
-        {active.google && <ChatPanel chat={google} title="MAX · Gemini" dueling={dueling} canDuel={activeCount === 2 && !busy} onStartDuel={(text) => startDuel("google", text)} />}
+        {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
+        {active.google && <ChatPanel chat={google} title="MAX · Gemini" dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
       </div>
       <div className="duel-controls">
         <p className="duel-status" role="status">{batchQuestion ? `Ukończono ${Math.floor(turns / 2)} rund. Czy chcesz kontynuować przez kolejne ${roundsPerBatch} rund?` : dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : `Wpisz temat i kliknij Pojedynek! Automatyczna pauza co ${roundsPerBatch} rund.`}</p>
@@ -224,6 +281,7 @@ export default function ChatArena({ enabled, roundsPerBatch = 5 }: { enabled: En
         }
       }}><span />Przeciągnij, aby zmienić wysokość {activeCount === 2 ? "obu czatów" : "czatu"} · {chatHeight} px</div>}
       <p className="footer-note">Tylko Ty, mrok i dwa głosy z zaświatów.</p>
+      <BuildInfo info={appInfo} />
     </main>
   </>;
 }

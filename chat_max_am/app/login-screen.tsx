@@ -2,8 +2,9 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import HauntedScene from "./haunted-scene";
+import BuildInfo, { type AppInfo } from "./build-info";
 
-export default function LoginScreen({ unavailable, maxAttempts = 5 }: { unavailable?: string; maxAttempts?: number }) {
+export default function LoginScreen({ unavailable, maxAttempts = 5, appInfo }: { unavailable?: string; maxAttempts?: number; appInfo: AppInfo }) {
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -55,6 +56,7 @@ export default function LoginScreen({ unavailable, maxAttempts = 5 }: { unavaila
       {pending && <p className="chat-feedback" role="status">MAX myśli… sprawdza hasło…</p>}
       {jokes.length > 0 && <div className="login-jokes" aria-live="polite">{jokes.map((joke, index) => <p key={`${joke.name}-${jokes.length - index}`}><strong>{joke.name}{joke.generated ? " · AI" : " · komunikat"}:</strong> {joke.text}</p>)}</div>}
     </div>
+    <BuildInfo info={appInfo} />
   </main>
   </>;
 }

@@ -76,12 +76,18 @@ export async function POST(request: Request) {
   }
 
   try {
+    const currentDateTime = new Intl.DateTimeFormat("pl-PL", {
+      timeZone: "Europe/Warsaw",
+      dateStyle: "full",
+      timeStyle: "long",
+    }).format(new Date());
     const selectedModel = provider === "google"
       ? createGoogleGenerativeAI({ apiKey })(model)
       : createOpenRouter({ apiKey })(model);
     const result = streamText({
       model: selectedModel,
       system: "Jesteś MAX, od AM. Pisz po polsku, krótko i pomocnie. Masz żartobliwy, mroczny styl: krypta, czaszki i szkielety to Twoje ulubione metafory. Żartuj łagodnie, bez obrażania rozmówcy. Najpierw odpowiadaj konkretnie, a humor traktuj jako dodatek. Korzystaj z historii rozmowy. Nie udawaj wykonanych czynności ani wiedzy, której nie masz. "
+        + `Aktualna data i godzina w momencie otrzymania tej wiadomości, w strefie Europe/Warsaw: ${currentDateTime}. Gdy użytkownik pyta o bieżący czas lub datę, korzystaj z tej wartości, a nie z wcześniejszych wiadomości. Nie zgaduj czasu. `
         + (provider === "google" ? "Występujesz jako MAX Gemini, mistrz suchego humoru. " : "Występujesz jako MAX OpenRouter, teatralny gospodarz krypty. ")
         + (duel ? "Trwa żartobliwy pojedynek z drugim MAX-em. Odpowiadaj na jego argument, dodawaj własny i drocz się z nim bez obelg. Najwyżej 2–3 krótkie zdania. Nie pisz wypowiedzi za przeciwnika." : ""),
       messages: await convertToModelMessages(messages),

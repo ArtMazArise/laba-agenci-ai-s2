@@ -4,7 +4,7 @@ import path from "node:path";
 
 const source = process.cwd();
 const target = path.join(source, ".publish", "max-chatbot");
-const rootFiles = [".env.example", ".gitignore", "README.md", "DEPLOY.md", "next.config.ts", "package.json", "package-lock.json", "tsconfig.json"];
+const rootFiles = [".env.example", ".gitignore", "AGENTS.md", "README.md", "DEPLOY.md", "next.config.ts", "package.json", "package-lock.json", "tsconfig.json"];
 const directories = ["app", "lib", "scripts", "tests"];
 const credentialPatterns = [
   /sk-or-v1-[A-Za-z0-9]{30,}/,
