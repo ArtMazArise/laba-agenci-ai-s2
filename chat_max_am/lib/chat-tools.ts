@@ -1,6 +1,12 @@
 import type { UIMessage } from "ai";
 import { isChatResult, type ChatRequestMode } from "./chat-result";
 
+export function formatResponseTime(milliseconds?: number) {
+  if (milliseconds === undefined || !Number.isFinite(milliseconds) || milliseconds < 0) return "";
+  const rounded = Math.round(milliseconds);
+  return rounded < 1000 ? `${rounded} ms` : `${(rounded / 1000).toLocaleString("pl-PL", { maximumFractionDigits: 2 })} s`;
+}
+
 export function parseTestQuestions(raw?: string): { questions: string[]; invalid: boolean } {
   if (!raw?.trim()) return { questions: [], invalid: true };
   try {

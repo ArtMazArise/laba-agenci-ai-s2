@@ -1,3 +1,4 @@
+import { getSetting } from "@/lib/settings";
 import ChatArena from "./chat-arena";
 import LoginScreen from "./login-screen";
 import { cookies } from "next/headers";
@@ -17,9 +18,12 @@ export default async function Home() {
     if (!authenticated && configured) await resetLearningAttempts();
   } catch { return <LoginScreen appInfo={appInfo} maxAttempts={getMaxAttempts()} unavailable="Magazyn sesji jest niedostępny. Dostęp zablokowany." />; }
   if (!authenticated) return <LoginScreen appInfo={appInfo} maxAttempts={getMaxAttempts()} unavailable={configured ? undefined : "Logowanie jest zablokowane. Ustaw CHAT_PASSWORD i SESSION_SECRET. Vercel wymaga też prywatnego magazynu sesji Blob."} />;
-  // Do przeglądarki trafiają tylko booleany, nigdy klucze API.
-  return <ChatArena appInfo={appInfo} testQuestions={await loadTestQuestions()} roundsPerBatch={getDuelBatchSize(process.env.CHAT_DUEL_ROUNDS)} enabled={{
-    openrouter: process.env.OPENROUTER_ENABLED?.trim().toLowerCase() !== "false",
-    google: process.env.GEMINI_ENABLED?.trim().toLowerCase() !== "false",
+  // Nazwy modeli są publiczną konfiguracją. Klucze API pozostają na serwerze.
+  return <ChatArena appInfo={appInfo} modelNames={{
+    openrouter: getSetting("OPENROUTER_MODEL")?.trim(),
+    google: getSetting("GEMINI_MODEL")?.trim(),
+  }} testQuestions={await loadTestQuestions()} roundsPerBatch={getDuelBatchSize(getSetting("CHAT_DUEL_ROUNDS"))} enabled={{
+    openrouter: getSetting("OPENROUTER_ENABLED")?.trim().toLowerCase() !== "false",
+    google: getSetting("GEMINI_ENABLED")?.trim().toLowerCase() !== "false",
   }} />;
 }

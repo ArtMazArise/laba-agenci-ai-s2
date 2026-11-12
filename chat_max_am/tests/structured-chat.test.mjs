@@ -1,3 +1,4 @@
+import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -13,7 +14,7 @@ const routeSource = await readFile(new URL("../app/api/chat/route.ts", import.me
 const schemaSource = await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8");
 const compile = (source) => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false } = {}) {
+async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {} } = {}) {
   const requests = [];
   const router = createOpenRouter({
     apiKey: "test-only-key",
@@ -40,6 +41,7 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
     controller.close();
   } }) }; } });
   const context = vm.createContext({ Response, Request, process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
+  const settings = await loadSettingsModule(context, publicConfig);
   const schema = new vm.SourceTextModule(compile(schemaSource), { context });
   await schema.link(() => {});
   const aiModule = new vm.SyntheticModule(Object.keys(ai), function () { for (const key of Object.keys(ai)) this.setExport(key, ai[key]); }, { context });
@@ -47,7 +49,7 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
   const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", () => () => google); }, { context });
   const auth = new vm.SyntheticModule(["requireSession"], function () { this.setExport("requireSession", async () => null); }, { context });
   const route = new vm.SourceTextModule(compile(routeSource), { context });
-  await route.link((name) => ({ ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
+  await route.link((name) => ({ "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
   await route.evaluate();
   return {
     requests, google, schema: schema.namespace,
@@ -194,4 +196,20 @@ test("ostrzeżenie SDK o braku structured output nie staje się poprawnym wyniki
   const { chunks } = await app.post("google", undefined, "analysis");
   assert.match(chunks.find((c) => c.type === "error")?.errorText ?? "", /GEMINI_MODEL/);
   assert.ok(!chunks.some((c) => c.type === "data-chat-result"));
+});
+
+test("API używa modelu z config.json, a false w pliku blokuje obu dostawców mimo env", async () => {
+  const app = await setup({ publicConfig: { OPENROUTER_MODEL: "file/model" } });
+  const { chunks } = await app.post();
+  assert.ok(chunks.some((chunk) => chunk.type === "data-chat-result"));
+  assert.equal(app.requests[0].model, "file/model");
+  const disabled = await setup({ publicConfig: { OPENROUTER_ENABLED: false, GEMINI_ENABLED: false } });
+  for (const provider of ["openrouter", "google"]) {
+    // Tu odpowiedź nie jest SSE, bo konfiguracja blokuje wywołanie przed SDK.
+    const result = await disabled.post(provider);
+    assert.equal(result.response.status, 403);
+    assert.match(result.text, /wyłączony/);
+  }
+  assert.equal(disabled.requests.length, 0);
+  assert.equal(disabled.google.doStreamCalls.length, 0);
 });

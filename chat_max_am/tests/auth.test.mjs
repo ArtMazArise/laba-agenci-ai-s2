@@ -1,3 +1,4 @@
+import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -37,6 +38,12 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   }
   async function load(name) {
     if (modules.has(name)) return modules.get(name);
+    if (name === "./settings" || name === "@/lib/settings") {
+      const settings = await loadSettingsModule(context);
+      await settings.evaluate();
+      modules.set(name, settings);
+      return settings;
+    }
     let module;
     if (name.startsWith("node:")) {
       const builtin = await import(name);

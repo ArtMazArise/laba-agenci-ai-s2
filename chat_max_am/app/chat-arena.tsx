@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
 
 import { createDuelPause, runDuel } from "@/lib/duel";
 import type { ChatRequestMode } from "@/lib/chat-result";
@@ -10,7 +10,7 @@ import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -37,6 +37,8 @@ function pasteMessage(event: ClipboardEvent<HTMLInputElement | HTMLTextAreaEleme
 }
 
 function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis", id: string = provider) {
+  const startedAt = useRef<number | null>(null);
+  const [responseTimes, setResponseTimes] = useState<Record<string, number>>({});
   const lastReply = useRef<string | null>(null);
   const lastMode = useRef<ChatRequestMode>("chat");
   const retrying = useRef(false);
@@ -44,33 +46,44 @@ function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis"
     id,
     transport: transports[provider],
     onFinish: ({ message, isAbort, isError, isDisconnect }) => {
+      if (!isAbort && !isError && !isDisconnect && startedAt.current !== null) {
+        const duration = performance.now() - startedAt.current;
+        setResponseTimes((previous) => ({ ...previous, [message.id]: duration }));
+      }
+      startedAt.current = null;
       lastReply.current = isAbort || isError || isDisconnect ? null : message.parts
         .filter((part) => part.type === "text").map((part) => part.text).join("");
     },
-    onError: () => { lastReply.current = null; },
+    onError: () => { lastReply.current = null; startedAt.current = null; },
   });
   return {
     ...chat,
+    responseTimes,
     isBusy: chat.status === "submitted" || chat.status === "streaming",
     clearConversation() {
       chat.setMessages([]);
       chat.clearError();
       lastReply.current = null;
       lastMode.current = "chat";
+      startedAt.current = null;
+      setResponseTimes({});
     },
     async sendText(text: string, sharedTurnId?: string, sentAt = Date.now()) {
       lastMode.current = mode;
+      startedAt.current = performance.now();
       await chat.sendMessage({ text, metadata: { sentAt, ...(sharedTurnId ? { sharedTurnId } : {}) } }, { body: { mode } });
     },
     async retryLastRequest() {
-      if (retrying.current) return;
+      if (retrying.current || chat.status !== "error" || !chat.error) return;
       retrying.current = true;
       lastReply.current = null;
+      startedAt.current = performance.now();
       try { await retryLastChatRequest(chat, lastMode.current); }
       finally { retrying.current = false; }
     },
     async reply(text: string) {
       lastMode.current = "duel";
+      startedAt.current = performance.now();
       lastReply.current = null;
       await chat.sendMessage({ text, metadata: { sentAt: Date.now() } }, { body: { mode: "duel" } });
       return lastReply.current;
@@ -81,10 +94,42 @@ function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis"
 type MaxChat = ReturnType<typeof useMaxChat>;
 type Provider = "openrouter" | "google";
 type EnabledProviders = Record<Provider, boolean>;
+type ModelNames = Partial<Record<Provider, string>>;
 
-function AnalysisWorkspace({ active, enabled, setActive, onBusyChange }: {
+function PanelHeading({ title, modelName, chat, responseTime, children }: {
+  title: string;
+  modelName?: string;
+  chat: Pick<MaxChat, "status" | "error">;
+  responseTime?: number;
+  children: ReactNode;
+}) {
+  const state = chat.error || chat.status === "error" ? "BŁĄD"
+    : chat.status === "submitted" ? "MYŚLI"
+    : chat.status === "streaming" ? "PRZETWARZA" : "OTWARTA";
+  return <div className="chat-topbar">
+    <div className="panel-identity">
+      <Skull />
+      <div className="panel-labels">
+        <span className="panel-title">{title}<ResponseTime milliseconds={responseTime} /></span>
+        <span className="model-name" title="Model ustawiony w konfiguracji">{modelName || "model nieustawiony"}</span>
+      </div>
+    </div>
+    <div className="panel-state" role="status" data-state={chat.status}>
+      <span>KRYPTA</span><span>{state}</span>
+    </div>
+    <div className="panel-header-actions">{children}</div>
+  </div>;
+}
+
+function ResponseTime({ milliseconds }: { milliseconds?: number }) {
+  const label = formatResponseTime(milliseconds);
+  return label ? <small className="response-time" title="Czas od wysłania zapytania do odebrania pełnej odpowiedzi, wraz z walidacją">· {label}</small> : null;
+}
+
+function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChange }: {
   active: EnabledProviders;
   enabled: EnabledProviders;
+  modelNames: ModelNames;
   setActive: (value: EnabledProviders | ((previous: EnabledProviders) => EnabledProviders)) => void;
   onBusyChange: (busy: boolean) => void;
 }) {
@@ -129,10 +174,10 @@ function AnalysisWorkspace({ active, enabled, setActive, onBusyChange }: {
         const preview = reply?.parts.find((part) => part.type === "data-chat-preview");
         const previewText = chat.isBusy && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         return <article className="chat-panel analysis-panel" key={provider} aria-label={`Analiza: ${title}`}>
-          <div className="chat-topbar"><span><Skull /> {title}</span><div className="message-copy-controls">
+          <PanelHeading title={title} modelName={modelNames[provider]} chat={chat} responseTime={reply ? chat.responseTimes[reply.id] : undefined}>
             <CopyButton text={result && reply ? formatMessage(reply, title) : ""} />
             <button type="button" className="copy-button" disabled={chat.isBusy || !chat.messages.length} onClick={chat.clearConversation}>Wyczyść</button>
-          </div></div>
+          </PanelHeading>
           <div className="analysis-result-body" aria-live="polite" aria-busy={chat.isBusy}>
             {result ? <>
               <dl className="analysis-metadata">
@@ -152,9 +197,10 @@ function AnalysisWorkspace({ active, enabled, setActive, onBusyChange }: {
   </section>;
 }
 
-function ChatPanel({ chat, title, mode, dueling, canDuel, onStartDuel }: {
+function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel }: {
   chat: MaxChat;
   title: string;
+  modelName?: string;
   mode: "chat" | "analysis";
   dueling: boolean;
   canDuel: boolean;
@@ -175,7 +221,9 @@ function ChatPanel({ chat, title, mode, dueling, canDuel, onStartDuel }: {
   }
 
   return <div className="chat-panel">
-    <div className="chat-topbar"><span><Skull /> {title}</span><div className="chat-topbar-actions"><div className="copy-clear-controls chat-header-controls"><CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button></div><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span></div></div>
+    <PanelHeading title={title} modelName={modelName} chat={chat}>
+      <CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button>
+    </PanelHeading>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
       {chat.messages.map((item) => {
         const result = messageResult(item);
@@ -184,7 +232,7 @@ function ChatPanel({ chat, title, mode, dueling, canDuel, onStartDuel }: {
         const previewText = chat.isBusy && item === chat.messages.at(-1) && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         const presentation = item.role === "assistant" && !result ? assistantPresentation(messageText(item)) : { text: messageText(item), category: undefined, review: undefined };
         return <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
-          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}</span><div className="message-copy-controls"><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title) : ""} /><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, true) : ""} label="Kopiuj z JSON" /></div></div>
+          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}{item.role === "assistant" && <ResponseTime milliseconds={chat.responseTimes[item.id]} />}</span><div className="message-copy-controls"><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title) : ""} /><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, true) : ""} label="Kopiuj z JSON" /></div></div>
           {isAnalysis && <small className="message-metadata">Szkic odpowiedzi</small>}
           <span>{presentation.text || previewText}</span>
           {!chat.isBusy && !result && preview && <small className="message-metadata">Odpowiedź nie została zatwierdzona.</small>}
@@ -214,7 +262,7 @@ function ChatPanel({ chat, title, mode, dueling, canDuel, onStartDuel }: {
   </div>;
 }
 
-export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQuestions = { questions: [], invalid: false } }: { enabled: EnabledProviders; roundsPerBatch?: number; appInfo: AppInfo; testQuestions?: { questions: string[]; invalid: boolean } }) {
+export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5, appInfo, testQuestions = { questions: [], invalid: false } }: { enabled: EnabledProviders; modelNames?: ModelNames; roundsPerBatch?: number; appInfo: AppInfo; testQuestions?: { questions: string[]; invalid: boolean } }) {
   const [mode, setMode] = useState<"chat" | "analysis">("chat");
   const openrouter = useMaxChat("openrouter", "chat");
   const google = useMaxChat("google", "chat");
@@ -372,7 +420,7 @@ export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQu
         <p className="subtitle">Twoja krypta. Wybierz jednego MAX-a lub zaproś obu do pojedynku.</p>
       </header>
       <div hidden={mode !== "analysis"}>
-        <AnalysisWorkspace active={active} enabled={enabled} setActive={setActive} onBusyChange={setAnalysisBusy} />
+        <AnalysisWorkspace active={active} enabled={enabled} modelNames={modelNames} setActive={setActive} onBusyChange={setAnalysisBusy} />
         <div className="duel-toolbar mode-toolbar">{modeButtons}</div>
       </div>
       <div hidden={mode !== "chat"}>
@@ -399,8 +447,8 @@ export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQu
         {testQuestions.invalid && <p className="questions-error" role="alert">Nie można odczytać listy z config/test-questions.json. Sprawdź plik i format JSON. Nadal możesz wpisać własną wiadomość.</p>}
       </div>
       <div className="chat-grid" data-count={activeCount} style={{ "--chat-height": `${chatHeight}px` } as CSSProperties}>
-        {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
-        {active.google && <ChatPanel chat={google} title="MAX · Gemini" mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
+        {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" modelName={modelNames.openrouter} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
+        {active.google && <ChatPanel chat={google} title="MAX · Gemini" modelName={modelNames.google} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
       </div>
       <div className="duel-controls">
         <p className="duel-status" role="status">{batchQuestion ? `Ukończono ${Math.floor(turns / 2)} rund. Czy chcesz kontynuować przez kolejne ${roundsPerBatch} rund?` : dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : `Wpisz temat i kliknij Pojedynek! Automatyczna pauza co ${roundsPerBatch} rund.`}</p>

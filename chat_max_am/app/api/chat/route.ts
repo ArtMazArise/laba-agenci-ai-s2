@@ -1,3 +1,4 @@
+import { getSetting } from "@/lib/settings";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { requireSession } from "@/lib/auth";
@@ -20,7 +21,7 @@ export const maxDuration = 60;
 function publicError(error: unknown, provider: "openrouter" | "google", analysis = false): string {
   const name = provider === "google" ? "Gemini" : "OpenRouter";
   const modelVariable = provider === "google" ? "GEMINI_MODEL" : "OPENROUTER_MODEL";
-  const configurationError = `MAX: ${name}: model lub konfiguracja nie obsługuje analizy z JSON Schema. Sprawdź obsługę structured output i ustaw ${modelVariable} w .env.local lub Vercel na zgodny model w swoim limicie. Model nie został zmieniony automatycznie.`;
+  const configurationError = `MAX: ${name}: model lub konfiguracja nie obsługuje analizy z JSON Schema. Sprawdź obsługę structured output i ustaw ${modelVariable} w config.json (lub w env, gdy nie ma go w pliku) na zgodny model w swoim limicie. Model nie został zmieniony automatycznie.`;
   if (analysis && error && typeof error === "object" && "name" in error && error.name === "AI_UnsupportedFunctionalityError") return configurationError;
   if (APICallError.isInstance(error)) {
     if (analysis && error.statusCode !== undefined && [400, 404, 422, 501].includes(error.statusCode)) return configurationError;
@@ -33,7 +34,7 @@ function publicError(error: unknown, provider: "openrouter" | "google", analysis
       case 402:
         return `MAX: Brak środków na koncie ${name}. Sprawdź saldo konta.`;
       case 404:
-        return `MAX: Model jest niedostępny. Sprawdź ${provider === "google" ? "GEMINI_MODEL" : "OPENROUTER_MODEL"} w .env.local.`;
+        return `MAX: Model jest niedostępny. Sprawdź ${provider === "google" ? "GEMINI_MODEL" : "OPENROUTER_MODEL"} w config.json lub env.`;
       case 429:
         return `MAX: ${name} zgłasza limit zapytań. Poczekaj i sprawdź dostępny limit konta.`;
       case 503:
@@ -56,9 +57,9 @@ export async function POST(request: Request) {
   if (provider !== "openrouter" && provider !== "google") {
     return new Response("MAX: Nieznany dostawca modelu.", { status: 400 });
   }
-  const enabled = provider === "google" ? process.env.GEMINI_ENABLED : process.env.OPENROUTER_ENABLED;
+  const enabled = provider === "google" ? getSetting("GEMINI_ENABLED") : getSetting("OPENROUTER_ENABLED");
   if (enabled?.trim().toLowerCase() === "false") {
-    return new Response("MAX: Ten dostawca jest wyłączony w .env.local.", { status: 403 });
+    return new Response("MAX: Ten dostawca jest wyłączony w konfiguracji (config.json lub env).", { status: 403 });
   }
   const mode = body?.mode ?? "chat";
   if (mode !== "chat" && mode !== "analysis" && mode !== "duel") {
@@ -67,11 +68,11 @@ export async function POST(request: Request) {
   const duel = mode === "duel";
   const analysis = mode === "analysis";
   const apiKey = (provider === "google" ? process.env.GOOGLE_GENERATIVE_AI_API_KEY : process.env.OPENROUTER_API_KEY)?.trim();
-  const model = (provider === "google" ? process.env.GEMINI_MODEL : process.env.OPENROUTER_MODEL)?.trim();
+  const model = (provider === "google" ? getSetting("GEMINI_MODEL") : getSetting("OPENROUTER_MODEL"))?.trim();
 
   if (!apiKey || !model) {
     return new Response(
-      `MAX: Brakuje konfiguracji. Uzupełnij ${provider === "google" ? "GOOGLE_GENERATIVE_AI_API_KEY i GEMINI_MODEL" : "OPENROUTER_API_KEY i OPENROUTER_MODEL"} w .env.local, a następnie uruchom serwer ponownie.`,
+      `MAX: Brakuje konfiguracji. Uzupełnij ${provider === "google" ? "GOOGLE_GENERATIVE_AI_API_KEY i GEMINI_MODEL" : "OPENROUTER_API_KEY i OPENROUTER_MODEL"} — klucz w .env.local, model w config.json lub env. Następnie uruchom serwer ponownie.`,
       { status: 503 },
     );
   }

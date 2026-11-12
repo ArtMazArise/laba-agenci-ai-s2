@@ -1,3 +1,4 @@
+import { getSetting } from "./settings";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { APICallError, generateText } from "ai";
@@ -15,8 +16,8 @@ function readJoke(text: string): string | null {
 // Wyłącznie stały tekst. Hasło ani żadne dane z formularza nie trafiają do modeli.
 export async function generateLoginJokes(signal: AbortSignal, previousProvider?: "openrouter" | "google") {
   const providers = [
-    { id: "openrouter", name: "MAX · OpenRouter", enabled: process.env.OPENROUTER_ENABLED, key: process.env.OPENROUTER_API_KEY, model: process.env.OPENROUTER_MODEL, create: createOpenRouter, maxTokens: 1024, timeoutMs: 30000 },
-    { id: "google", name: "MAX · Gemini", enabled: process.env.GEMINI_ENABLED, key: process.env.GOOGLE_GENERATIVE_AI_API_KEY, model: process.env.GEMINI_MODEL, create: createGoogleGenerativeAI, maxTokens: 180, timeoutMs: 30000 },
+    { id: "openrouter", name: "MAX · OpenRouter", enabled: getSetting("OPENROUTER_ENABLED"), key: process.env.OPENROUTER_API_KEY, model: getSetting("OPENROUTER_MODEL"), create: createOpenRouter, maxTokens: 1024, timeoutMs: 30000 },
+    { id: "google", name: "MAX · Gemini", enabled: getSetting("GEMINI_ENABLED"), key: process.env.GOOGLE_GENERATIVE_AI_API_KEY, model: getSetting("GEMINI_MODEL"), create: createGoogleGenerativeAI, maxTokens: 180, timeoutMs: 30000 },
   ];
   const active = providers.filter((provider) => provider.enabled?.trim().toLowerCase() !== "false");
   if (active.length === 0) return [];

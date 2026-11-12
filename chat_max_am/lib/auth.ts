@@ -1,3 +1,4 @@
+import { getSetting } from "./settings";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -14,7 +15,7 @@ type State = { failures: number; resetAt: number; sessions: Record<string, Sessi
 function config(): Config | null {
   const password = process.env.CHAT_PASSWORD;
   const secret = process.env.SESSION_SECRET;
-  const directory = process.env.AUTH_STATE_DIR?.trim();
+  const directory = getSetting("AUTH_STATE_DIR")?.trim();
   const blobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
   if (!password?.trim() || password.length > 512 || !secret || secret.length < 32) return null;
   // Vercel używa prywatnego Blob. Przy własnym serwerze można nadal podać
@@ -28,12 +29,12 @@ function config(): Config | null {
 export function isAuthConfigured() { return config() !== null; }
 
 export function getMaxAttempts() {
-  const limit = Number(process.env.CHAT_MAX_ATTEMPTS);
+  const limit = Number(getSetting("CHAT_MAX_ATTEMPTS"));
   return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : 5;
 }
 
 export function isLearningMode() {
-  return process.env.NODE_ENV === "development" && process.env.AUTH_LEARNING_MODE?.trim().toLowerCase() !== "false";
+  return process.env.NODE_ENV === "development" && getSetting("AUTH_LEARNING_MODE")?.trim().toLowerCase() !== "false";
 }
 
 export async function resetLearningAttempts() {

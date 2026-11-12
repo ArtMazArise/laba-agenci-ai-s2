@@ -1,3 +1,4 @@
+import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -16,6 +17,15 @@ const module = new vm.SourceTextModule(ts.transpileModule(source, {
 await module.link((name) => { if (name === "./chat-result") return schemaModule; throw Error("Unexpected runtime import"); });
 await module.evaluate();
 const { parseTestQuestions, messageText, formatMessage, formatConversation, formatCombinedConversation, broadcastMessage } = module.namespace;
+
+test("czas odpowiedzi: milisekundy, sekundy i brak nieprawidłowego pomiaru", () => {
+  const format = module.namespace.formatResponseTime;
+  assert.equal(format(850), "850 ms");
+  assert.equal(format(2400), "2,4 s");
+  assert.equal(format(1000), "1 s");
+  assert.equal(format(999.6), "1 s");
+  for (const value of [undefined, NaN, Infinity, -1]) assert.equal(format(value), "");
+});
 
 test("kopie dodają status sprawdzenia, bez dopisywania pola do JSON i bez zmiany widoku", () => {
   const data = { category: "sales", priority: "normal", draft: "Konsultacja kosztuje 150 zł brutto.", needs_review: false };
@@ -262,6 +272,7 @@ test("wspólne pytanie z odpowiedzią tylko Gemini pomija OpenRouter", () => {
 async function questionLoader(flag, contents) {
   let reads = 0;
   const context = vm.createContext({ process: { env: { CHAT_TEST_QUESTIONS_ENABLED: flag, CHAT_TEST_QUESTIONS: '["IGNOROWANE"]' }, cwd: () => "/project" } });
+  const settings = await loadSettingsModule(context);
   const loaderSource = await readFile(new URL("../lib/test-questions.ts", import.meta.url), "utf8");
   const loader = new vm.SourceTextModule(ts.transpileModule(loaderSource, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -279,6 +290,7 @@ async function questionLoader(flag, contents) {
   await loader.link((name) => {
     if (name === "node:fs/promises") return filesystem;
     if (name === "node:path") return paths;
+    if (name === "./settings") return settings;
     if (name === "./chat-tools") return parser;
     throw Error(`Unexpected import ${name}`);
   });

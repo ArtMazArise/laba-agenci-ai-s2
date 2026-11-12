@@ -1,3 +1,4 @@
+import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -22,6 +23,7 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   let instant = Date.parse("2026-11-05T23:30:00Z");
   class TestDate extends Date { constructor() { super(instant); } }
   const context = vm.createContext({ Response, process: { env }, Date: TestDate });
+  const settings = await loadSettingsModule(context);
   const schemaModule = new vm.SourceTextModule(ts.transpileModule(await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText, { context });
   await schemaModule.link(() => {});
   class MockAPIError extends Error {
@@ -72,6 +74,7 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
+    if (specifier === "@/lib/settings") return settings;
     if (specifier === "ai") return ai;
     if (specifier === "@/lib/chat-result") return schemaModule;
     if (specifier === "@/lib/auth") return auth;
@@ -294,7 +297,7 @@ test("flagi env są niewrażliwe na wielkość liter; wyłączenie działa bez k
   for (const provider of ["openrouter", "google"]) {
     const response = await app.post(history, { provider });
     assert.equal(response.status, 403);
-    assert.match(await response.text(), /\.env.local/);
+    assert.match(await response.text(), /config\.json lub env/);
   }
   assert.equal(app.calls.length, 0);
 });
