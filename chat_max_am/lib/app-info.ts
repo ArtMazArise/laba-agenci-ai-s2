@@ -16,7 +16,7 @@ async function latestLocalChange() {
     } else latest = Math.max(latest, info.mtimeMs);
   }
   // Wyłącznie pliki źródłowe. Bez czytania .env i katalogów stanu/sesji.
-  for (const name of ["app", "lib", "scripts", "tests", "package.json", "package-lock.json", "next.config.ts", "tsconfig.json", "README.md", "DEPLOY.md"]) {
+  for (const name of ["app", "lib", "scripts", "tests", "config", "package.json", "package-lock.json", "next.config.ts", "tsconfig.json", "README.md", "DEPLOY.md"]) {
     await inspect(name).catch(() => {});
   }
   return latest ? new Date(latest) : null;

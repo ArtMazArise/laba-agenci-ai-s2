@@ -235,8 +235,10 @@ export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQu
     <HauntedScene />
     <main className="arena">
       <header>
-        <LogoutButton beforeLogout={stopDuel} />
-        <p className="eyebrow"><span /> PO DRUGIEJ STRONIE EKRANU</p>
+        <div className="arena-header-row">
+          <p className="eyebrow"><span /> PO DRUGIEJ STRONIE EKRANU</p>
+          <LogoutButton beforeLogout={stopDuel} />
+        </div>
         <h1>Jestem <span>MAX</span>, od AM</h1>
         <p className="subtitle">Twoja krypta. Wybierz jednego MAX-a lub zaproś obu do pojedynku.</p>
       </header>
@@ -259,7 +261,7 @@ export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQu
           <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages)} label="Kopiuj całość" />
           <button type="button" className="copy-button clear-chat-button" disabled={busy || dueling || sendingShared || (!openrouter.messages.length && !google.messages.length && !openrouter.error && !google.error && !turns && !duelError)} onClick={clearAllConversations}>Wyczyść całość</button>
         </div>
-        {testQuestions.invalid && <p className="questions-error" role="alert">Lista pytań w CHAT_TEST_QUESTIONS ma nieprawidłowy format JSON. Nadal możesz wpisać własną wiadomość.</p>}
+        {testQuestions.invalid && <p className="questions-error" role="alert">Nie można odczytać listy z config/test-questions.json. Sprawdź plik i format JSON. Nadal możesz wpisać własną wiadomość.</p>}
       </div>
       <div className="chat-grid" data-count={activeCount} style={{ "--chat-height": `${chatHeight}px` } as CSSProperties}>
         {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}

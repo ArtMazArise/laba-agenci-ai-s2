@@ -29,7 +29,7 @@ Wymagane do ochrony dostępu:
 - `CHAT_PASSWORD`
 - `CHAT_MAX_ATTEMPTS`
 - `CHAT_DUEL_ROUNDS`
-- `CHAT_TEST_QUESTIONS`
+- `CHAT_TEST_QUESTIONS_ENABLED`
 - `SESSION_SECRET`
 - `BLOB_READ_WRITE_TOKEN` — dodawany przy połączeniu prywatnego Blob Store
 

@@ -59,7 +59,10 @@ input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-
   .login-scene .skeleton-left { left: calc(50% - 95px); right: auto; }
   .login-scene .skeleton-right { right: calc(50% - 95px); }
 }
-.logout-area { margin-bottom: 18px; text-align: right; }
+.arena-header-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.arena-header-row .eyebrow { margin: 0; min-width: 0; }
+.arena-header-row .eyebrow span { flex-shrink: 0; }
+.logout-area { margin: 0; text-align: right; flex-shrink: 0; }
 .logout-area button { padding: 9px 18px; font-size: 13px; }
 .logout-area p { color: #ffb6b6; font-size: 12px; }
 .arena { width: min(1240px, calc(100% - 280px)); margin-top: 36px; }

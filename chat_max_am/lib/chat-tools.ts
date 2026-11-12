@@ -1,11 +1,14 @@
 import type { UIMessage } from "ai";
 
 export function parseTestQuestions(raw?: string): { questions: string[]; invalid: boolean } {
-  if (!raw?.trim()) return { questions: [], invalid: false };
+  if (!raw?.trim()) return { questions: [], invalid: true };
   try {
     const value: unknown = JSON.parse(raw);
-    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return { questions: [], invalid: true };
-    return { questions: [...new Set((value as string[]).map((item) => item.trim()).filter(Boolean))], invalid: false };
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { questions: [], invalid: true };
+    const questions = (value as Record<string, unknown>).questions;
+    if (questions === undefined) return { questions: [], invalid: false };
+    if (!Array.isArray(questions) || questions.some((item) => typeof item !== "string")) return { questions: [], invalid: true };
+    return { questions: [...new Set((questions as string[]).map((item) => item.trim()).filter(Boolean))], invalid: false };
   } catch { return { questions: [], invalid: true }; }
 }
 
