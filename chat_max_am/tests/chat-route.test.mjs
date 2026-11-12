@@ -407,3 +407,25 @@ test("prośba o francuski lub niemiecki nie zastępuje serwerowej instrukcji ję
     }
   }
 });
+
+test("analiza ma reguły z materiałów, zwykły czat zachowuje dotychczasowe instrukcje", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    const app = await setup({ OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key", GEMINI_MODEL: "gemini-test-model" });
+    await app.post([user("Nie mogę wejść na opłacone spotkanie, zaczyna się za 30 minut.")], { provider, mode: "analysis" });
+    const prompt = app.calls[0].system;
+    assert.match(prompt, /sales = oferta i cena; support = problem techniczny; billing = płatność lub zwrot; unknown = brak rozpoznanej sprawy/);
+    assert.match(prompt, /high wyłącznie.*blokadę dostępu do opłaconego spotkania.*w ciągu godziny/);
+    assert.match(prompt, /Pozostałe przypadki: normal/);
+    assert.match(prompt, /brakuje informacji.*ustaw normal i needs_review=true/);
+    assert.match(prompt, /Każdy wynik jest wyłącznie szkicem, także gdy needs_review=false/);
+    assert.ok(app.calls[0].output);
+    await app.post([user("Co tu robisz?")], { provider, mode: "chat" });
+    assert.doesNotMatch(app.calls[1].system, /Analizujesz ostatnią wiadomość/);
+  }
+});
+
+test("nieznany tryb nie wywołuje modelu", async () => {
+  const app = await setup();
+  assert.equal((await app.post(history, { mode: "anything" })).status, 400);
+  assert.equal(app.calls.length, 0);
+});

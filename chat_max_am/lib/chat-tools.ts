@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { isChatResult } from "./chat-result";
+import { isChatResult, type ChatRequestMode } from "./chat-result";
 
 export function parseTestQuestions(raw?: string): { questions: string[]; invalid: boolean } {
   if (!raw?.trim()) return { questions: [], invalid: true };
@@ -28,7 +28,13 @@ export function messageResult(message: Pick<UIMessage, "parts">) {
 function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: boolean) {
   const text = clientMessageText(message);
   const result = message.role === "assistant" ? messageResult(message) : undefined;
-  return withJson && result ? `${text}\nJSON:\n${JSON.stringify(result, null, 2)}` : text;
+  const raw = messageText(message);
+  const legacyReview = message.role === "assistant" ? raw.match(/(?:^|\n)needs_review\s*=\s*(true|false)\b/i)?.[1].toLowerCase() : undefined;
+  const review = result?.needs_review ?? (legacyReview === undefined ? undefined : legacyReview === "true");
+  const legacyNote = message.role === "assistant" && !result ? raw.match(/(?:^|\n)Do sprawdzenia(?: przez pracownika)?\s*:[ \t]*([\s\S]*?)(?=\nneeds_review\s*=|$)/i)?.[1].trim() : undefined;
+  const note = legacyNote || (review ? "Wymagana weryfikacja przez pracownika." : "Brak");
+  const copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
+  return withJson && result ? `${copy}\nJSON:\n${JSON.stringify(result, null, 2)}` : copy;
 }
 
 export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string, withJson = false) {
@@ -55,6 +61,8 @@ export function assistantPresentation(text: string) {
 }
 
 export function clientMessageText(message: Pick<UIMessage, "role" | "parts">) {
+  const result = messageResult(message);
+  if (result) return result.draft;
   const text = messageText(message);
   return message.role === "assistant" ? assistantPresentation(text).text : text;
 }
@@ -93,4 +101,26 @@ export function formatCombinedConversation(openrouter: UIMessage[], google: UIMe
 export async function broadcastMessage(text: string, active: Record<"openrouter" | "google", boolean>, senders: Record<"openrouter" | "google", (text: string) => Promise<void>>) {
   if (!text.trim()) return [];
   return Promise.allSettled((["openrouter", "google"] as const).filter((provider) => active[provider]).map((provider) => senders[provider](text.trim())));
+}
+
+export async function analyzeClientMessage(text: string, active: Record<"openrouter" | "google", boolean>, chats: Record<"openrouter" | "google", {
+  clearConversation: () => void;
+  sendText: (text: string, sharedTurnId?: string) => Promise<void>;
+}>, turnId: string) {
+  const sender = (provider: "openrouter" | "google") => async (value: string) => {
+    chats[provider].clearConversation();
+    await chats[provider].sendText(value, turnId);
+  };
+  return broadcastMessage(text, active, { openrouter: sender("openrouter"), google: sender("google") });
+}
+
+export async function retryLastChatRequest(chat: {
+  status: string;
+  error?: Error;
+  messages: UIMessage[];
+  regenerate: (options: { body: { mode: ChatRequestMode } }) => Promise<void>;
+}, mode: ChatRequestMode) {
+  if (chat.status !== "error" || !chat.error || !chat.messages.some((message) => message.role === "user")) return;
+  // regenerate zastępuje nieudaną odpowiedź bez dodawania ponownie pytania.
+  await chat.regenerate({ body: { mode } });
 }

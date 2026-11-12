@@ -131,3 +131,48 @@ input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-
 .message-json details { min-width: 0; flex: 1; }
 .message-json summary { cursor: pointer; width: fit-content; }
 .message-json pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.chat-header-controls { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.chat-retry { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+
+.chat-mode { display: flex; flex-direction: column; gap: 6px; color: #adbd9b; font-size: 11px; }
+.chat-mode-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-mode-button { padding: 11px 14px; background: #212a1a; color: #c9ef9e; border-color: #526e32; font-size: 12px; }
+.chat-mode-button[aria-pressed="true"] { background: #607d35; color: #101908; border-color: #bdff59; }
+.chat-mode-button:hover:enabled { background: #303e23; }
+.chat-mode-button[aria-pressed="true"]:hover:enabled { background: #769944; }
+.chat-mode-button:focus-visible { outline: 2px solid #bdff59; outline-offset: 3px; }
+.duel-toolbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
+.duel-toolbar .chat-mode { flex-direction: column; align-items: flex-start; justify-self: start; text-align: left; }
+.chat-height-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 8px; padding: 4px 12px 4px 4px; border: 1px dashed #53643e; border-radius: 8px; background: #12180fe6; }
+.chat-height-controls .chat-resizer { flex: 1 1 280px; margin-top: 0; border: 0; background: transparent; }
+.height-editor { display: flex; align-items: center; gap: 8px; color: #b9ca9f; font-size: 11px; }
+.height-editor input { width: 88px; min-width: 0; padding: 8px 27px 8px 10px; color-scheme: dark; appearance: textfield; -moz-appearance: textfield; }
+.height-editor input::-webkit-inner-spin-button, .height-editor input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+@media (max-width: 640px) { .duel-toolbar { grid-template-columns: 1fr; } .duel-toolbar .duel-buttons { justify-self: center; } }
+
+.analysis-workspace h2 { margin: 0 0 12px; font-size: 24px; }
+.analysis-form { display: flex; flex-direction: column; align-items: stretch; padding: 18px; gap: 12px; }
+.analysis-form > label { font-size: 13px; color: #d1dfc1; }
+.analysis-form textarea { width: 100%; min-height: 180px; padding: 14px; resize: vertical; font: inherit; line-height: 1.5; color: #e5f4d3; background: #090c09; border: 1px solid #343d32; border-radius: 8px; }
+.analysis-form textarea:focus-visible { outline: 2px solid #bdff59; outline-offset: 2px; }
+.analysis-form .provider-toggles { margin: 0; }
+.analysis-form > button { align-self: flex-start; }
+.analysis-copy-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.analysis-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+.analysis-results[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.analysis-result-body { padding: 20px; overflow-wrap: anywhere; }
+.analysis-metadata { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 20px; }
+.analysis-metadata dt { color: #98a38e; font-size: 11px; margin-bottom: 5px; }
+.analysis-metadata dd { margin: 0; color: #bdff59; font-size: 13px; }
+.analysis-result-body h3 { margin: 0 0 10px; font-size: 14px; }
+.analysis-draft { white-space: pre-wrap; line-height: 1.5; }
+@media (max-width: 850px) { .analysis-results { grid-template-columns: minmax(0, 1fr); } }
+
+.duel-toolbar > .chat-mode-buttons { justify-self: start; }
+.mode-toolbar { margin-top: 18px; }
+
+.height-spinbox { position: relative; display: inline-flex; }
+.height-step-buttons { position: absolute; top: 2px; bottom: 2px; right: 2px; display: flex; flex-direction: column; width: 22px; }
+.height-step-buttons button { flex: 1; padding: 0; border: 0; border-radius: 3px; font-size: 10px; line-height: 1; color: #c9ef9e; background: #212a1a; }
+.height-step-buttons button:hover:enabled { background: #43582c; box-shadow: none; }

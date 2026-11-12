@@ -107,7 +107,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
     auth, directory, env, modelCalls: () => modelCalls, jokeCalls, providerCalls, blobState,
     login: (value, origin, previousJokeProvider) => login(request("login", { password: value, previousJokeProvider }, "", origin)),
     logout: (cookie) => logout(request("logout", {}, cookie)),
-    chat: (cookie = "", provider = "openrouter", origin) => chat(request("chat", { provider, messages: [] }, cookie, origin)),
+    chat: (cookie = "", provider = "openrouter", origin, mode = "chat") => chat(request("chat", { provider, mode, messages: [] }, cookie, origin)),
     advance: (milliseconds) => { now += milliseconds; },
   };
 }
@@ -134,7 +134,9 @@ test("poprawne hasło: podpisane cookie bez hasła, sesja 8h, HttpOnly i SameSit
 
 test("bez sesji: /api/chat odmawia obu dostawcom przed wywołaniem SDK", async (t) => {
   const app = await setup(t);
-  for (const provider of ["openrouter", "google"]) assert.equal((await app.chat("", provider)).status, 401);
+  for (const provider of ["openrouter", "google"]) {
+    for (const mode of ["chat", "analysis", "duel"]) assert.equal((await app.chat("", provider, undefined, mode)).status, 401);
+  }
   assert.equal(app.modelCalls(), 0);
 });
 

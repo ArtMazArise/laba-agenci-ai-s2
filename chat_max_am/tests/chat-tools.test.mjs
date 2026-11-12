@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { Chat } from "@ai-sdk/react";
+import { DefaultChatTransport, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
 const source = await readFile(new URL("../lib/chat-tools.ts", import.meta.url), "utf8");
 const toolsContext = vm.createContext({});
@@ -15,14 +17,102 @@ await module.link((name) => { if (name === "./chat-result") return schemaModule;
 await module.evaluate();
 const { parseTestQuestions, messageText, formatMessage, formatConversation, formatCombinedConversation, broadcastMessage } = module.namespace;
 
+test("kopie dodają status sprawdzenia, bez dopisywania pola do JSON i bez zmiany widoku", () => {
+  const data = { category: "sales", priority: "normal", draft: "Konsultacja kosztuje 150 zł brutto.", needs_review: false };
+  const message = { id: "a", role: "assistant", parts: [{ type: "data-chat-result", data }] };
+  assert.equal(module.namespace.clientMessageText(message), data.draft);
+  assert.match(formatMessage(message, "MAX"), /Do sprawdzenia: Brak\nneeds_review = false$/);
+  const copied = formatMessage(message, "MAX", true);
+  assert.deepEqual(JSON.parse(copied.split("\nJSON:\n")[1]), data);
+  assert.equal(formatMessage({ role: "user", parts: [{ type: "text", text: "Pytanie" }] }, "MAX"), "Ty: Pytanie");
+});
+
+test("formularz analizy wysyła tylko nową sprawę, zachowuje osobny zwykły czat i pomija wyłączony model", async () => {
+  const calls = [];
+  const fetch = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return createUIMessageStreamResponse({ stream: createUIMessageStream({ execute({ writer }) {
+      writer.write({ type: "start" });
+      writer.write({ type: "data-chat-result", data: { category: "support", priority: "normal", draft: "Jaki komunikat widzisz?", needs_review: true } });
+      writer.write({ type: "finish", finishReason: "stop" });
+    } }) });
+  };
+  const ordinary = new Chat({ id: "ordinary", messages: [{ id: "u0", role: "user", parts: [{ type: "text", text: "Zwykła rozmowa" }] }] });
+  const original = JSON.stringify(ordinary.messages);
+  const analysis = new Chat({ id: "analysis-google", transport: new DefaultChatTransport({ api: "http://localhost/api/chat", body: { provider: "google" }, fetch }) });
+  const channels = {
+    google: {
+      clearConversation() { analysis.messages = []; analysis.clearError(); },
+      async sendText(text, sharedTurnId) { await analysis.sendMessage({ text, metadata: { sharedTurnId } }, { body: { mode: "analysis" } }); },
+    },
+    openrouter: { clearConversation() { assert.fail("Wyłączony model"); }, async sendText() { assert.fail("Wyłączony model"); } },
+  };
+  for (const text of ["Pierwsza sprawa", "Druga sprawa"]) await module.namespace.analyzeClientMessage(text, { google: true, openrouter: false }, channels, text);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].provider, "google");
+  assert.equal(calls[1].mode, "analysis");
+  assert.equal(calls[1].messages.length, 1);
+  assert.equal(calls[1].messages[0].parts[0].text, "Druga sprawa");
+  assert.equal(JSON.stringify(ordinary.messages), original);
+});
+
+test("Ponów: tylko błędny czat, bez duplikowania pytania i bez ponowienia drugiego modelu", async () => {
+  for (const failure of ["http", "stream"]) {
+    const calls = [];
+    const fakeFetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      const failed = body.provider === "google" && calls.filter((call) => call.provider === "google").length === 1;
+      if (failed && failure === "http") return new Response("MAX: Gemini chwilowo niedostępny.", { status: 503 });
+      return createUIMessageStreamResponse({ stream: createUIMessageStream({ execute({ writer }) {
+        writer.write({ type: "start" });
+        if (failed) writer.write({ type: "error", errorText: "MAX: Gemini chwilowo niedostępny." });
+        else {
+          writer.write({ type: "data-chat-result", data: { category: "support", priority: "normal", draft: "Jaki komunikat widzisz?", needs_review: true } });
+          writer.write({ type: "finish", finishReason: "stop" });
+        }
+      } }) });
+    };
+    const makeChat = (provider) => new Chat({ id: provider, transport: new DefaultChatTransport({ api: "http://localhost/api/chat", body: { provider }, fetch: fakeFetch }), onError: () => {} });
+    const router = makeChat("openrouter");
+    const gemini = makeChat("google");
+    const metadata = { sharedTurnId: "same-question", sentAt: 123 };
+    await Promise.all([router.sendMessage({ text: "Nie mogę się zalogować.", metadata }), gemini.sendMessage({ text: "Nie mogę się zalogować.", metadata })]);
+    assert.equal(gemini.status, "error");
+    assert.equal(router.status, "ready");
+    await module.namespace.retryLastChatRequest(gemini, "chat");
+    assert.equal(gemini.status, "ready");
+    assert.equal(gemini.error, undefined);
+    assert.equal(calls.filter((call) => call.provider === "google").length, 2);
+    assert.equal(calls.filter((call) => call.provider === "openrouter").length, 1);
+    assert.equal(calls.at(-1).mode, "chat");
+    assert.equal(calls.at(-1).messages.length, 1);
+    assert.deepEqual(calls.at(-1).messages[0].metadata, metadata);
+    assert.equal(gemini.messages.filter((message) => message.role === "user").length, 1);
+    assert.equal(gemini.messages.filter((message) => message.role === "assistant").length, 1);
+  }
+});
+
+test("Ponów: nie ponawia aktywnego ani poprawnego czatu; zachowuje tryb ostatniego żądania", async () => {
+  const modes = [];
+  const chat = { status: "error", error: new Error("Test"), messages: [{ id: "u", role: "user", parts: [{ type: "text", text: "Riposta" }] }], regenerate: async (options) => modes.push(options.body.mode) };
+  for (const status of ["ready", "submitted", "streaming"]) await module.namespace.retryLastChatRequest({ ...chat, status }, "chat");
+  await module.namespace.retryLastChatRequest({ ...chat, messages: [] }, "chat");
+  assert.equal(modes.length, 0);
+  await module.namespace.retryLastChatRequest(chat, "duel");
+  await module.namespace.retryLastChatRequest(chat, "analysis");
+  assert.deepEqual(modes, ["duel", "analysis"]);
+});
+
 test("kopiuj z JSON: wiadomość i cały czat zawierają szkic oraz zatwierdzony obiekt", () => {
   const data = { category: "support", priority: "normal", draft: "Jaki komunikat widzisz?", needs_review: true };
   const user = { id: "u", role: "user", parts: [{ type: "text", text: "Nie mogę się zalogować." }] };
   const reply = { id: "a", role: "assistant", parts: [{ type: "data-chat-result", data }] };
-  assert.equal(formatMessage(reply, "MAX", true), `MAX: ${data.draft}\nJSON:\n${JSON.stringify(data, null, 2)}`);
+  assert.equal(formatMessage(reply, "MAX", true), `MAX: ${data.draft}\nDo sprawdzenia: Wymagana weryfikacja przez pracownika.\nneeds_review = true\nJSON:\n${JSON.stringify(data, null, 2)}`);
   assert.equal(formatMessage(user, "MAX", true), formatMessage(user, "MAX"));
   assert.equal(formatConversation([user, reply], "MAX", true), `${formatMessage(user, "MAX")}\n${"-".repeat(63)}\n${formatMessage(reply, "MAX", true)}`);
-  assert.doesNotMatch(formatConversation([user, reply], "MAX"), /JSON:|needs_review/);
+  assert.doesNotMatch(formatConversation([user, reply], "MAX"), /JSON:/);
+  assert.match(formatConversation([user, reply], "MAX"), /Do sprawdzenia:.*\nneeds_review = true/);
   const preview = { id: "p", role: "assistant", parts: [{ type: "data-chat-preview", data: "Częściowa odpowiedź" }] };
   assert.equal(formatConversation([preview], "MAX", true), "");
 });
@@ -47,24 +137,29 @@ test("JSON w czacie: pokazuje i kopiuje tylko zatwierdzony draft, pomija podglą
   const message = { id: "a", role: "assistant", parts: [{ type: "data-chat-preview", data: "Niepełny szkic" }, { type: "data-chat-result", data: result }] };
   assert.equal(messageText(message), result.draft);
   assert.equal(module.namespace.messageResult(message), result);
-  assert.equal(formatMessage(message, "MAX"), `MAX: ${result.draft}`);
+  assert.equal(formatMessage(message, "MAX"), `MAX: ${result.draft}\nDo sprawdzenia: Wymagana weryfikacja przez pracownika.\nneeds_review = true`);
   assert.equal(messageText({ parts: message.parts.slice(0, 1) }), "");
   assert.equal(formatConversation([{ ...message, parts: message.parts.slice(0, 1) }], "MAX"), "");
   assert.equal(messageText({ parts: [{ type: "data-chat-result", data: { ...result, needs_review: "true" } }] }), "");
 });
 
-test("schemat odrzuca brakujące pola, puste szkice, nieznane wartości i nadmiarowe klucze", () => {
+test("schemat odrzuca brakujące pola, nieznane wartości, złe typy i nadmiarowe klucze", () => {
   const valid = { category: "sales", priority: "normal", draft: "Dziękuję za wiadomość.", needs_review: false };
   const { isChatResult } = schemaModule.namespace;
   assert.equal(isChatResult(valid), true);
-  for (const value of [null, [], {}, { ...valid, category: "billing" }, { ...valid, priority: "urgent" }, { ...valid, draft: " " }, { ...valid, draft: "x".repeat(4001) }, { ...valid, needs_review: 1 }, { ...valid, extra: 1 }]) assert.equal(isChatResult(value), false);
+  for (const category of ["sales", "support", "billing", "unknown"]) {
+    for (const priority of ["normal", "high"]) assert.equal(isChatResult({ ...valid, category, priority }), true);
+  }
+  // Podany schemat wymaga tylko typu string, bez minLength i maxLength.
+  for (const draft of ["", " ", "x".repeat(4001)]) assert.equal(isChatResult({ ...valid, draft }), true);
+  for (const value of [null, [], {}, { ...valid, category: "other" }, { ...valid, priority: "urgent" }, { ...valid, priority: "low" }, { ...valid, draft: 123 }, { ...valid, needs_review: 1 }, { ...valid, extra: 1 }]) assert.equal(isChatResult(value), false);
   for (const key of Object.keys(valid)) {
     const missing = { ...valid }; delete missing[key];
     assert.equal(isChatResult(missing), false);
   }
 });
 
-test("widok klienta i kopie zawierają szkic bez notatki; metadane są oddzielne", () => {
+test("widok klienta zawiera szkic; kopie przywracają notatkę i needs_review", () => {
   const text = "Kategoria: support  \nSzkic: Napisz proszę, jaki komunikat pojawia się podczas logowania.  \nDo sprawdzenia: przyczyna problemu.  \nneeds_review = true";
   const result = module.namespace.assistantPresentation(text);
   assert.equal(result.text, "Napisz proszę, jaki komunikat pojawia się podczas logowania.");
@@ -74,7 +169,8 @@ test("widok klienta i kopie zawierają szkic bez notatki; metadane są oddzielne
   const reply = { id: "a1", role: "assistant", parts: [{ type: "text", text }] };
   for (const copy of [formatMessage(reply, "MAX"), formatConversation([question, reply], "MAX"), formatCombinedConversation([question, reply], [])]) {
     assert.match(copy, /Napisz proszę/);
-    assert.doesNotMatch(copy, /Kategoria|Szkic:|Do sprawdzenia|needs_review/);
+    assert.doesNotMatch(copy, /Kategoria|Szkic:/);
+    assert.match(copy, /Do sprawdzenia: przyczyna problemu\.\nneeds_review = true/);
   }
   for (let length = 0; length <= text.length; length++) {
     const partial = module.namespace.assistantPresentation(text.slice(0, length));

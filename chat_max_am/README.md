@@ -1,108 +1,175 @@
-# MAX od AM
+* { box-sizing: border-box; }
+:root { color-scheme: dark; }
+body { margin: 0; min-height: 100svh; background: #060709; color: #e8e9e2; font-family: Arial, Helvetica, sans-serif; }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 15%, #a3ff1210, transparent 60%), repeating-linear-gradient(0deg, transparent 0 3px, #ffffff02 3px 4px); }
+main { position: relative; width: min(760px, calc(100% - 32px)); margin: 60px auto 24px; }
+header { margin-bottom: 30px; }
+.eyebrow { display: flex; align-items: center; gap: 10px; color: #b0c58d; font-size: 10px; letter-spacing: 3px; font-weight: 700; }
+.eyebrow span { width: 6px; height: 6px; background: #b4f954; box-shadow: 0 0 14px #b4f954; border-radius: 50%; }
+h1 { margin: 18px 0 12px; font-size: clamp(28px, 5.5vw, 52px); letter-spacing: -2px; line-height: 1.15; }
+h1 span { color: #bdff59; text-shadow: 0 0 32px #a3ff1233; }
+.subtitle { margin: 0; font-size: 14px; color: #8f948b; }
+.chat-panel { background: #0c0e10ef; border: 1px solid #333c29; border-radius: 16px; overflow: hidden; box-shadow: 0 24px 100px #000b, 0 0 50px #9bff0906; }
+.chat-topbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 17px 22px; border-bottom: 1px solid #232820; color: #b4bca9; font-size: 10px; font-weight: 700; letter-spacing: 1.8px; }
+.chat-topbar > span:first-child { display: flex; align-items: center; gap: 10px; }
+.chat-topbar svg { width: 18px; height: 20px; color: #bdff59; }
+.status { font-size: 9px; color: #7d8673; letter-spacing: 1px; }
+.conversation { height: 43vh; min-height: 220px; overflow-y: auto; padding: 22px; scrollbar-color: #3d4b2c #0c0e10; }
+.message { width: fit-content; max-width: 90%; margin: 0 0 12px auto; padding: 12px 16px; border: 1px solid #43582c; border-radius: 14px 14px 3px 14px; background: #1b2714; color: #e5f4d3; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-assistant { margin-left: 0; margin-right: auto; background: #171b18; border-color: #343d32; border-radius: 14px 14px 14px 3px; }
+.conversation-entry + .conversation-entry { border-top: 1px dashed #6e8057; margin-top: 12px; padding-top: 12px; }
+.conversation-entry .message { margin-bottom: 0; }
+.message-author { display: block; margin-bottom: 5px; color: #bdff59; font-size: 11px; font-weight: 700; }
+.message-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; white-space: normal; }
+.message-heading .message-author { margin: 0; }
+.copy-button { flex-shrink: 0; padding: 4px 7px; border: 1px solid #3b4732; border-radius: 5px; background: transparent; color: #adbd9b; font-size: 10px; font-weight: 400; letter-spacing: 0; }
+.copy-button:hover:enabled { color: #ddffac; background: #25301d; box-shadow: none; }
+.chat-topbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.copy-clear-controls { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
+.clear-chat-button { color: #bc9696; border-color: #553b3b; letter-spacing: 0; }
+.clear-chat-button:hover:enabled { color: #ffd2d2; background: #321e1e; }
+.chat-feedback { margin: 0; padding: 10px 20px; color: #b8c5ac; font-size: 13px; line-height: 1.5; }
+.chat-error { color: #ffb6b6; background: #32181b; border-top: 1px solid #663337; }
+input:disabled { opacity: .6; }
+form { display: flex; gap: 10px; padding: 16px; border-top: 1px solid #232820; background: #101310; }
+input { min-width: 0; flex: 1; padding: 15px; border: 1px solid #30372b; background: #090b09; color: #eef5e5; border-radius: 8px; font: inherit; }
+input::placeholder { color: #7c8576; }
+button { padding: 14px 26px; border: 1px solid #caff7c; border-radius: 8px; background: #bdff59; color: #132003; font: inherit; font-weight: 700; cursor: pointer; transition: box-shadow .2s, background .2s; }
+button:hover:enabled { background: #ceff89; box-shadow: 0 0 22px #b4f95433; }
+button:disabled { opacity: .45; cursor: default; }
+input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-offset: 3px; }
+.footer-note { text-align: center; color: #7c8277; font-size: 11px; margin-top: 20px; letter-spacing: 1px; }
+.build-info { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; margin: 12px 0 0; color: #858d7f; font-size: 10px; line-height: 1.6; text-align: center; }
+.build-info span { color: #536047; }
+.login-page { width: min(560px, calc(100% - 32px)); margin: 12vh auto; }
+.login-card { background: #0c0e10; border: 1px solid #43582c; border-radius: 16px; padding: 28px; box-shadow: 0 24px 100px #000b; }
+.login-card h1 { font-size: 36px; }
+.login-card form { margin-top: 24px; padding: 0; border: 0; background: transparent; flex-wrap: wrap; }
+.login-card .chat-error { margin-top: 18px; border: 1px solid #663337; border-radius: 8px; }
+.login-jokes { margin-top: 18px; color: #acb99d; font-size: 13px; line-height: 1.6; }
+.login-jokes strong { color: #bdff59; }
+.login-scene .skeleton-left { left: max(20px, calc(50% - 440px)); }
+.login-scene .skeleton-right { right: max(20px, calc(50% - 440px)); }
+.login-scene .skeleton { top: 25%; width: 130px; opacity: .8; }
+.login-scene .floating-skull { opacity: .55; }
+.login-card .usage-note { margin: 16px 0 0; }
+@media (max-width: 900px) {
+  .login-page { margin-top: 185px; }
+  .login-scene .skeleton { top: 15px; width: 65px; }
+  .login-scene .skeleton-left { left: calc(50% - 95px); right: auto; }
+  .login-scene .skeleton-right { right: calc(50% - 95px); }
+}
+.arena-header-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.arena-header-row .eyebrow { margin: 0; min-width: 0; }
+.arena-header-row .eyebrow span { flex-shrink: 0; }
+.logout-area { margin: 0; text-align: right; flex-shrink: 0; }
+.logout-area button { padding: 9px 18px; font-size: 13px; }
+.logout-area p { color: #ffb6b6; font-size: 12px; }
+.arena { width: min(1240px, calc(100% - 280px)); margin-top: 36px; }
+.chat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+.chat-grid[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.chat-grid .chat-panel { min-width: 0; height: var(--chat-height, 600px); display: flex; flex-direction: column; }
+.chat-grid .chat-topbar, .chat-grid form { flex-shrink: 0; }
+.chat-grid .conversation { flex: 1 1 0; height: auto; min-height: 0; }
+.panel-feedback { flex: 0 0 auto; max-height: 108px; overflow-y: auto; }
+.chat-resizer { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 7px; min-height: 44px; margin-top: 8px; padding: 8px; border: 1px dashed #53643e; border-radius: 8px; background: #12180fe6; color: #b9ca9f; font-size: 11px; cursor: ns-resize; touch-action: none; user-select: none; text-align: center; }
+.chat-resizer span { width: 48px; height: 4px; border-radius: 4px; background: #8fa968; }
+.chat-resizer:hover { border-color: #bdff59; color: #d6ff9b; }
+.chat-resizer:focus-visible { outline: 2px solid #bdff59; outline-offset: 3px; }
+.provider-toggles { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 14px 16px; padding: 12px; border: 1px solid #333c29; border-radius: 8px; }
+.provider-toggles legend { padding: 0 6px; color: #adbd9b; font-size: 11px; letter-spacing: 1px; }
+.provider-toggles label { display: flex; align-items: center; gap: 9px; color: #d1dfc1; font-size: 13px; cursor: pointer; }
+.provider-toggles input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: #bdff59; }
+.provider-toggles:disabled { opacity: .6; }
+.arena-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; margin-bottom: 22px; border: 1px solid #333c29; border-radius: 12px; background: #101310; }
+.arena-controls .provider-toggles { flex: 0 0 auto; align-self: stretch; margin: 0; gap: 12px; }
+.shared-composer { display: flex; flex: 1 1 330px; min-width: 0; align-items: center; border: 0; margin: 0; padding: 0; background: transparent; }
+.question-combo { position: relative; flex: 1; min-width: 0; }
+.question-combo input { width: 100%; padding-right: 50px; }
+.clear-question { position: absolute; right: 23px; top: 50%; transform: translateY(-50%); padding: 0 5px; background: transparent; border: 0; color: #aab79a; font-size: 21px; line-height: 1; }
+.clear-question:hover:enabled { color: #e0ffbb; background: transparent; box-shadow: none; }
+.questions-error { flex-basis: 100%; margin: 0; color: #ffb6b6; font-size: 12px; line-height: 1.5; }
+.chat-grid form { flex-wrap: wrap; }
+.chat-grid form input { flex-basis: 140px; }
+.chat-actions { display: flex; gap: 8px; }
+.chat-actions button { padding: 13px 16px; }
+.duel-controls { margin-top: 18px; text-align: center; }
+.duel-status { margin: 0 0 12px; color: #c4d0b9; font-size: 13px; line-height: 1.5; }
+.duel-buttons { display: flex; justify-content: center; gap: 12px; }
+.duel-controls .chat-error { border: 1px solid #663337; border-radius: 8px; }
+.secondary-button { background: #212a1a; color: #c9ef9e; border-color: #526e32; }
+.secondary-button:hover:enabled { background: #303e23; }
+.stop-button { flex-shrink: 0; background: #501f2a; color: #ffd2d9; border-color: #c66277; }
+.stop-button:hover:enabled { background: #702d3c; }
+.usage-note { margin: 12px 16px 16px; font-size: 11px; line-height: 1.6; color: #9ba68f; }
+@media (max-width: 850px) { .chat-grid { grid-template-columns: 1fr; } .chat-actions button { font-size: 13px; padding: 12px; } }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.haunted-scene { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+.skeleton { position: absolute; top: 28%; width: 110px; color: #c7e1a5; opacity: .72; filter: drop-shadow(0 0 16px #b4f95455); animation: sway 5s ease-in-out infinite; transform-origin: 50% 75%; }
+.skeleton-left { left: max(14px, calc(50% - 760px)); }
+.skeleton-right { right: max(14px, calc(50% - 760px)); animation-delay: -2.5s; }
+.skeleton-head { display: block; width: 43%; height: auto; margin: 0 auto -3px; animation: nod 3s ease-in-out infinite; transform-origin: bottom; }
+.skeleton-body { display: block; width: 100%; }
+.skeleton-arm { transform-box: view-box; transform-origin: 50% 10%; animation: wave 3s ease-in-out infinite; }
+.right-arm { animation-delay: -1.5s; }
+.floating-skull { position: absolute; width: 46px; color: #b6cb9d; opacity: .25; animation: float 7s ease-in-out infinite; }
+.skull-one { left: 8%; top: 10%; }
+.skull-two { right: 12%; top: 8%; width: 32px; animation-delay: -3s; }
+.skull-three { right: 7%; bottom: 8%; width: 60px; animation-delay: -5s; }
+@keyframes float { 0%, 100% { translate: 0 0; rotate: -12deg; } 50% { translate: 0 -22px; rotate: 12deg; } }
+@keyframes sway { 0%, 100% { rotate: -8deg; translate: 0 0; } 50% { rotate: 8deg; translate: 0 -12px; } }
+@keyframes nod { 0%, 100% { rotate: -10deg; } 50% { rotate: 12deg; } }
+@keyframes wave { 0%, 100% { rotate: -14deg; } 50% { rotate: 14deg; } }
+@media (max-width: 1000px) { .arena { width: calc(100% - 32px); } .arena header { padding-right: 135px; min-height: 165px; } .skeleton { top: 30px; width: 60px; opacity: .65; } .skeleton-left { left: auto; right: 82px; } .skeleton-right { right: 16px; } .skull-two { display: none; } }
+@media (max-width: 520px) { main { margin-top: 36px; } .eyebrow { font-size: 8px; letter-spacing: 2px; } .conversation { height: 45vh; } form { padding: 12px; gap: 8px; } input { padding: 12px; font-size: 14px; } button { padding: 12px 18px; } .chat-topbar { padding: 15px; letter-spacing: 1px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
-Chatbot Next.js App Router z TypeScript: dwa okna (OpenRouter i Gemini), strumieniowanie i oddzielna historia każdej rozmowy. Historia jest w pamięci przeglądarki i znika po odświeżeniu strony.
+.message-metadata { display: block; margin-top: 8px; color: #98a38e; font-size: 10px; white-space: normal; }
 
-## Uruchomienie
+.message-copy-controls { display: flex; flex-wrap: wrap; gap: 5px; }
+.message-json { display: flex; align-items: flex-start; gap: 8px; }
+.message-json details { min-width: 0; flex: 1; }
+.message-json summary { cursor: pointer; width: fit-content; }
+.message-json pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-1. W folderze projektu wykonaj `npm install`. Zachowaj `package-lock.json`; npm uzupełni go o nowe zależności. Kolejne instalacje z gotowym lockfile można wykonywać przez `npm ci`.
-2. Utwórz samodzielnie plik `.env.local`, kopiując zawartość `.env.example`. Jeśli `.env.local` już istnieje, uzupełnij go bez nadpisywania innych ustawień.
-3. Uzupełnij samodzielnie wartości w `.env.local`:
-   - `OPENROUTER_ENABLED`: `true` włącza OpenRouter, `false` go wyłącza.
-   - `OPENROUTER_API_KEY`: klucz OpenRouter.
-   - `OPENROUTER_MODEL`: identyfikator modelu OpenRouter, np. `openrouter/free`.
-   - `GEMINI_ENABLED`: `true` włącza Gemini, `false` go wyłącza.
-   - `GOOGLE_GENERATIVE_AI_API_KEY`: klucz wygenerowany w Google AI Studio, osobny od klucza OpenRouter.
-   - `GEMINI_MODEL`: identyfikator modelu Google, np. `gemini-3.5-flash-lite` ([cennik i darmowy poziom](https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite)).
+.chat-header-controls { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.chat-retry { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 
-   Pola kluczy i modeli w `.env.example` celowo pozostają puste, a flagi mają wartość `true`. Brak flagi w istniejącym `.env.local` oznacza `true`, więc dotychczasowa konfiguracja nadal działa. Nie wklejaj kluczy do rozmowy i nie dodawaj prefiksu `NEXT_PUBLIC_`.
-4. Uruchom `npm run dev` i otwórz http://localhost:3000 (lub adres wypisany w terminalu). Po zmianie konfiguracji zatrzymaj serwer przez Ctrl+C i uruchom go ponownie.
+.chat-mode { display: flex; flex-direction: column; gap: 6px; color: #adbd9b; font-size: 11px; }
+.chat-mode-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-mode-button { padding: 11px 14px; background: #212a1a; color: #c9ef9e; border-color: #526e32; font-size: 12px; }
+.chat-mode-button[aria-pressed="true"] { background: #607d35; color: #101908; border-color: #bdff59; }
+.chat-mode-button:hover:enabled { background: #303e23; }
+.chat-mode-button[aria-pressed="true"]:hover:enabled { background: #769944; }
+.chat-mode-button:focus-visible { outline: 2px solid #bdff59; outline-offset: 3px; }
+.duel-toolbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
+.duel-toolbar .chat-mode { flex-direction: column; align-items: flex-start; justify-self: start; text-align: left; }
+.chat-height-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.chat-height-controls .chat-resizer { flex: 1 1 280px; margin-top: 0; }
+.height-editor { display: flex; align-items: center; gap: 8px; color: #b9ca9f; font-size: 11px; }
+.height-editor input { flex: 0 0 88px; width: 88px; min-width: 0; padding: 8px 10px; color-scheme: dark; }
+.height-editor input::-webkit-inner-spin-button { opacity: 1; }
+@media (max-width: 640px) { .duel-toolbar { grid-template-columns: 1fr; } .duel-toolbar .duel-buttons { justify-self: center; } }
 
-Pliki `.env` i `.env.local` są ignorowane przez `.gitignore`. Oba klucze są używane wyłącznie w serwerowym `/api/chat`. Pole `provider` wybiera `openrouter` lub `google`; bez tego pola route zachowuje dotychczasowy OpenRouter. Brak konfiguracji jednego dostawcy nie blokuje drugiego. Bez konfiguracji aplikacja pokazuje błąd, bez zastępczej odpowiedzi.
+.analysis-workspace h2 { margin: 0 0 12px; font-size: 24px; }
+.analysis-form { display: flex; flex-direction: column; align-items: stretch; padding: 18px; gap: 12px; }
+.analysis-form > label { font-size: 13px; color: #d1dfc1; }
+.analysis-form textarea { width: 100%; min-height: 180px; padding: 14px; resize: vertical; font: inherit; line-height: 1.5; color: #e5f4d3; background: #090c09; border: 1px solid #343d32; border-radius: 8px; }
+.analysis-form textarea:focus-visible { outline: 2px solid #bdff59; outline-offset: 2px; }
+.analysis-form .provider-toggles { margin: 0; }
+.analysis-form > button { align-self: flex-start; }
+.analysis-copy-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.analysis-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+.analysis-results[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.analysis-result-body { padding: 20px; overflow-wrap: anywhere; }
+.analysis-metadata { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 20px; }
+.analysis-metadata dt { color: #98a38e; font-size: 11px; margin-bottom: 5px; }
+.analysis-metadata dd { margin: 0; color: #bdff59; font-size: 13px; }
+.analysis-result-body h3 { margin: 0 0 10px; font-size: 14px; }
+.analysis-draft { white-space: pre-wrap; line-height: 1.5; }
+@media (max-width: 850px) { .analysis-results { grid-template-columns: minmax(0, 1fr); } }
 
-## Dwa czaty i pojedynek
+.duel-toolbar > .chat-mode-buttons { justify-self: start; }
+.mode-toolbar { margin-top: 18px; }
 
-- Cała konfiguracja jest w `.env.local`; wzór to `.env.example`. `OPENROUTER_ENABLED=false` lub `GEMINI_ENABLED=false` wyłącza dostawcę w interfejsie i API. `true` go włącza. Po zmianie uruchom serwer ponownie. Do przeglądarki przekazywane są tylko booleany dostępności, bez kluczy.
-- Checkboxy „Aktywne czaty” na stronie pozwalają przełączyć się na jeden lub dwa dostępne modele bez edycji plików. Ukrycie okna nie usuwa historii; wybór obowiązuje do odświeżenia strony. Podczas odpowiedzi i pojedynku checkboxy są zablokowane. Dostawcy wyłączeni w konfiguracji nie mogą zostać włączeni checkboxem.
-- Własne pole pod każdym oknem wysyła wiadomość tylko do tego dostawcy.
-- Obok „Ślij” przy każdym czacie jest „Pojedynek!”. Wpisz temat w polu tego MAX-a, który ma zacząć, i kliknij jego „Pojedynek!”. Oba czaty muszą być aktywne i gotowe. Jego pełna odpowiedź trafi do drugiego MAX-a, dalej odpowiadają na zmianę. Każdy model zachowuje własną historię. Między wypowiedziami jest 1,5 sekundy przerwy.
-- Przyciski „Pauza / Kontynuuj” i „Stop” są pośrodku pod oknami czatów. „Stop” przerywa bieżący strumień i blokuje kolejne tury. Błąd, przerwany strumień lub brak odpowiedzi także kończą pojedynek. Tryb nie uruchamia się sam po otwarciu strony.
-- `CHAT_DUEL_ROUNDS=5` w `.env.local` ustawia rozmiar partii (1–100, domyślnie 5). Runda to po jednej odpowiedzi obu modeli. Po każdej partii pojawia się automatyczna pauza i pytanie o kolejną partię tej samej długości. „Tak” zachowuje historię i kolejność, „Nie” kończy pojedynek.
-- „Pauza” pozwala dokończyć bieżącą wypowiedź, po czym blokuje następną turę. „Kontynuuj” wznawia od kolejnego rozmówcy, z tą samą historią. „Stop” działa również podczas pauzy.
-- Okna mają zawsze tę samą wysokość, również podczas oczekiwania i błędów. Uchwyt pod czatami zmienia wysokość obu naraz (360–1400 px) przez przeciąganie myszą lub palcem. Można też wybrać uchwyt klawiszem Tab i użyć strzałek, Home lub End. Wąski ekran układa czaty jeden pod drugim, zachowując wspólną wysokość.
-
-Pierwszy test wykonaj samodzielnie w przeglądarce. Każda odpowiedź zużywa limit API, a płatne modele mogą pobierać środki. Pojedynek działa partiami po `CHAT_DUEL_ROUNDS` pełnych rund (domyślnie 5); po partii pyta o kontynuację; z każdą turą rośnie przesyłana historia. Zatrzymanie nie cofa kosztu już rozpoczętej generacji.
-
-## Wersje i protokół
-
-- `ai` 6.x + `@ai-sdk/react` 3.x, zgodnie z [oficjalną instrukcją AI SDK 6](https://ai-sdk.dev/docs/migration-guides/migration-guide-6-0).
-- `@openrouter/ai-sdk-provider` 2.9.1, zgodnie z [instrukcją OpenRouter dla AI SDK 6](https://github.com/OpenRouterTeam/ai-sdk-provider#legacy-setup-for-ai-sdk-v6).
-- `@ai-sdk/google` 3.x, zgodnie z tabelą wersji AI SDK 6. Bezpośrednie połączenie z Google przez `createGoogleGenerativeAI`, z nazwą API z wersji 6 ([zmiany nazw w wersji 7](https://github.com/vercel/ai/blob/main/skills/migrate-ai-sdk-v6-to-v7/SKILL.md)).
-- Klient: `useChat`, `DefaultChatTransport`, `sendMessage` i tekstowe `message.parts`. Serwer: `validateUIMessages`, asynchroniczne `convertToModelMessages`, `streamText` i `toUIMessageStreamResponse`. Transport przesyła pełną historię bieżącej rozmowy przy każdej wiadomości.
-
-Bez bazy danych. Dark i animacje pozostają w aplikacji.
-
-## Hasło warsztatowe i sesja
-
-Cała konfiguracja pozostaje w `.env.local` (wzór: `.env.example`). Nie nadpisuj istniejącego pliku ani kluczy dostawców.
-
-1. Dodaj `CHAT_PASSWORD=` i po znaku `=` wpisz własne hasło warsztatowe (1–512 znaków, nie same spacje). Nie udostępniaj go w rozmowie.
-2. `SESSION_SECRET` został wygenerowany lokalnie kryptograficznie i dopisany do istniejącego `.env.local`, bez odczytu jego wcześniejszej zawartości. Nie kopiuj na niego pustego pola z przykładu. Przy nowej instalacji wygenerujesz sekret poleceniem `node scripts/generate-session-secret.mjs`; kolejne uruchomienie dopisuje nową wartość i unieważnia wcześniejsze sesje. Skrypt nigdy nie wypisuje sekretu.
-3. Lokalnie `AUTH_STATE_DIR` zostaw puste — serwer użyje ignorowanego przez Git katalogu `.auth-state/`. Zrestartuj `npm run dev` po zmianie `.env.local`.
-
-Hasło porównywane jest wyłącznie na serwerze. Sesja trwa 8 godzin i ma podpis HMAC oparty na `SESSION_SECRET`. Cookie zawiera tylko losowy identyfikator sesji, datę wygaśnięcia oraz podpis: bez hasła i kluczy API. Ustawienia: `HttpOnly`, `SameSite=Strict`, `Path=/`, a w produkcji także `Secure`. Strona i `/api/chat` sprawdzają sesję przed dostępem do czatu, obu dostawców i modeli. Brak sesji daje 401, brak konfiguracji lub magazynu daje 503; ochrona nigdy nie wyłącza się sama. Żądania logowania, wyjścia i zalogowanego czatu muszą mieć prawidłowy `Origin`.
-
-„Wyjdź” zatrzymuje odpowiedzi i pojedynek, unieważnia sesję po stronie serwera, usuwa cookie i wraca do ekranu hasła. Skopiowane wcześniej cookie też przestaje działać. Zmiana hasła lub sekretu unieważnia stare sesje.
-
-W lokalnym `npm run dev` domyślnie działa `AUTH_LEARNING_MODE=true`: po wyczerpaniu limitu błędnych prób wystarczy odświeżyć ekran hasła klawiszem F5, aby dostać nowy limit prób. Nie trzeba czekać 15 minut. Ustawienie `AUTH_LEARNING_MODE=false` przywraca pełny limit również lokalnie. W produkcji tryb nauki jest zawsze wyłączony: po wyczerpaniu limitu błędów obowiązuje 15-minutowe okno liczone od pierwszego błędu. Limit dotyczy całego wspólnego hasła warsztatowego, więc błędy jednej osoby mogą chwilowo zablokować logowanie pozostałym. Już zalogowane sesje pozostają aktywne. Limit i identyfikatory sesji zapisują się w pliku stanu; licznik nie zależy od cookie, adresu IP ani pamięci procesu. Atomowa blokada plikowa chroni również przed równoczesnymi próbami. Sukces nie kasuje wcześniejszych błędów w oknie. Po każdej z dozwolonych błędnych prób serwer prosi tylko jeden aktywny model o żart. Pierwszy MAX jest losowany na serwerze; przy kolejnych próbach w tym samym ekranie Gemini i OpenRouter odpowiadają naprzemiennie. Przy jednym aktywnym modelu odpowiada on sam. F5 zaczyna nowe losowanie. To jawny wyjątek na ekranie logowania; zużywa limit API i ewentualne środki dostawców. Modele dostają wyłącznie stały prompt, bez wpisanego hasła ani danych z formularza. Wykonywane jest jedno wywołanie na próbę, bez ponowień. OpenRouter ma 30 sekund i 1024 tokeny, Gemini 30 sekund i 180 tokenów. Komunikaty odróżniają przekroczenie czasu, brak tekstu, wyczerpanie tokenów i błędy HTTP dostawcy. Brak konfiguracji, pusty tekst lub błąd daje jawny komunikat „Żart niedostępny”, bez lokalnej imitacji. Kolejne żądania po wyczerpaniu prób nie uruchamiają modeli. `/api/chat` nadal wymaga sesji i nigdy nie wywołuje modelu bez niej.
-
-Limit błędnych prób ustawia `CHAT_MAX_ATTEMPTS` w `.env.local` (domyślnie 5; zakres 1–100). Ekran pokazuje licznik błędów i „ZABLOKOWANO” po wyczerpaniu limitu, bez instrukcji odświeżania.
-
-### Hosting
-
-Instrukcje publikacji na własnym GitHub, konfiguracji Vercel i obowiązkowych testów hasła po wdrożeniu: [DEPLOY.md](DEPLOY.md).
-
-Na Vercel sesje i limit prób korzystają z prywatnego Vercel Blob Store przez `BLOB_READ_WRITE_TOKEN`. Bez niego logowanie jest zablokowane. Wspólne odczyty bez cache i warunkowe zapisy ETag zapewniają spójny stan przy wielu instancjach. Magazyn nie zawiera haseł ani kluczy API; nie zapisuje też historii czatu. Nie dodano bazy danych.
-
-Lokalnie nadal używany jest ignorowany katalog `.auth-state/`. Przy własnym serwerze można wskazać `AUTH_STATE_DIR` jako trwały katalog współdzielony przez wszystkie instancje. Dysk lokalny funkcji serverless lub `/tmp` nie zapewnia globalnego limitu. Niedostępny lub uszkodzony magazyn blokuje dostęp zamiast zerować licznik.
-
-### Sprawdzenia ręczne w przeglądarce
-
-Po ustawieniu hasła i restarcie serwera (błędne hasło uruchomi teraz generowanie żartów przez aktywne modele):
-
-1. W prywatnym oknie przeglądarki zobacz ekran „Wpisz hasło”. Wpisz jeden raz błędne hasło: komunikat o 2 pozostałych próbach i żarty aktywnych MAX-ów.
-2. Wpisz prawidłowe hasło: zobaczysz czaty. Nie wysyłaj wiadomości do modeli w ramach tego testu.
-3. Kliknij „Wyjdź”: ekran hasła wraca; odświeżenie nadal nie pokazuje czatu.
-4. Lokalnie sprawdź limit błędnych prób: po ostatniej pojawi się „ZABLOKOWANO”. Odśwież stronę i sprawdź poprawne hasło — bez czekania. W produkcji lub przy wyłączonym trybie nauki F5 nie resetuje blokady 15-minutowej.
-5. Opcjonalnie w konsoli przeglądarki wykonaj `fetch('/api/chat', {method: 'POST', credentials: 'omit'}).then(r => console.log(r.status))`. Oczekiwane 401; brak cookie zatrzymuje żądanie przed modelem.
-
-Automatyczne testy używają oddzielnego katalogu tymczasowego, sztucznych haseł i sekretów. Nie odczytują rzeczywistego `.env.local`, nie zmieniają limitu warsztatu i nie wykonują płatnych wywołań. Obejmują dobre i złe hasło, trzecią próbę, blokadę równoległych prób i nowych instancji, wyjście i odrzucanie starej sesji, wygaśnięcie/podmianę cookie, zmianę hasła, brak konfiguracji, niedostępny magazyn, cookie produkcyjne oraz 401 obu modeli bez sesji, reset prób w lokalnym trybie nauki, zgodność Origin/Host i generowanie żartów bez przekazywania hasła.
-
-## Sprawdzenie bez płatnych wywołań
-
-`npm test` sprawdza konfigurację obu dostawców, historię, błędy oraz naprzemienne tury, przerwanie i zatrzymywanie po błędzie. Testy podstawiają atrapę SDK oraz własne zmienne środowiskowe: nie czytają `.env.local` i nie łączą się z modelami. Pełne sprawdzenie typów po instalacji: `npx tsc --noEmit`.
-
-## Oznaczenie wersji
-
-Drobna stopka na ekranie hasła i pod czatem pokazuje wersję z `package.json`, datę w strefie `Europe/Warsaw` oraz „Lokalnie” / „Vercel · produkcja” / „Vercel · podgląd”. Lokalnie data pochodzi z najnowszej modyfikacji plików źródłowych; na Vercel z ostatniego commita aplikacji. Gdy historia Git jest niedostępna podczas budowania, stopka jawnie pokazuje datę „build”. Zmiana lokalnych plików nie aktualizuje wdrożenia Vercel — wymaga commita, push i nowego wdrożenia.
-
-## Wspólne pytania i kopiowanie
-
-Pytania są w pliku `config/test-questions.json`, w obiekcie `{ "questions": [...] }`. Plik zawiera pytania testowe, w tym „Daj przepis na dobrą pizzę”. Edytuj listę w tym pliku i zapisz go w repozytorium. W `.env.local` oraz w Vercel używaj wyłącznie przełącznika `CHAT_TEST_QUESTIONS_ENABLED=true` lub `false`. Bez wartości `true` plik nie jest odczytywany. Stara zmienna `CHAT_TEST_QUESTIONS` nie jest już odczytywana i można ją usunąć z ustawień. `{}` lub `{ "questions": [] }` oznacza pustą listę. Po zmianie zmiennej lokalnie uruchom serwer ponownie, a na Vercel wykonaj nowe wdrożenie.
-
-Pole obok checkboxów pozwala wybrać podpowiedź, zmienić jej treść lub wpisać własną wiadomość. Wyłączony przełącznik lub pusty obiekt/lista w pliku usuwa podpowiedzi, ale pozostawia możliwość pisania. Mały „×” czyści pole. „Wyślij” kieruje tę samą wiadomość równocześnie do zaznaczonych czatów; niezaznaczone modele nie otrzymują zapytań. Podczas pojedynku lub trwającej odpowiedzi wysyłanie jest zablokowane.
-
-„Kopiuj” przy wypowiedzi zapisuje w schowku tekst `Autor: wiadomość`. „Kopiuj czat” w nagłówku kopiuje wszystkie tekstowe wypowiedzi w kolejności rozmowy, oddzielone linią myślników. Nadmiar pustych linii jest usuwany z widoku i kopiowanego tekstu. Kolejne wypowiedzi w widoku rozdziela przerywana linia. Kopiowanie pomija części rozumowania i puste wiadomości. Przeglądarka musi udostępniać schowek (localhost lub HTTPS); odmowa jest sygnalizowana na przycisku.
-
-„Kopiuj całość” przy wspólnych pytaniach łączy obie historie: wspólna wiadomość pojawia się raz, potem odpowiedź OpenRouter i Gemini. Brak odpowiedzi któregoś modelu pomija jego wpis. Kolejne pytania zachowują kolejność; powtórzone pytanie wysłane ponownie jest osobną pozycją. Przycisk kopiuje aktualny tekst rozmów, również gdy dany czat jest obecnie ukryty checkboxem.
-
-Pod „Kopiuj czat” znajduje się „Wyczyść” usuwające historię i błąd tego modelu. Pod „Kopiuj całość” jest „Wyczyść całość”, które usuwa historie obu modeli (również ukryte), błędy i licznik pojedynku. Czyszczenie jest zablokowane podczas odpowiedzi lub aktywnego pojedynku; najpierw użyj „Stop”. Niewysłane szkice i zawartość schowka pozostają bez zmian.
-
-## Persona asystenta
-
-Zwykły czat obu modeli pracuje jako poważny asystent Studio NovaMAX: zwraca JSON z polami category, priority, draft i needs_review. Interfejs pokazuje szkic, dyskretne metadane i rozwijany pełny JSON. Zwykłe kopiowanie rozmowy obejmuje szkice. Przyciski „Kopiuj z JSON” dodają zatwierdzone obiekty do kopii wiadomości, czatu lub całości; „Kopiuj” obok rozwijanego JSON kopiuje wyłącznie sam obiekt. Fakty oferty to konsultacja online 45 minut za 150 zł brutto. Zasady rabatów, wolne terminy i płatności wymagają pracownika. Model nie rezerwuje, nie wysyła wiadomości, nie potwierdza płatności ani nie wykonuje zwrotów. Wiadomości klientów są materiałem do analizy, a nie instrukcjami zmieniającymi zasady. Humor pozostaje wyłącznie w trybie pojedynku i żartach po błędnym haśle. Automatyczne testy sprawdzają przekazywanie instrukcji do modeli; jakości generowanych szkiców nie sprawdzają płatnymi wywołaniami.
-
-Zwykły czat OpenRouter i Gemini używa `streamText` z `Output.object` w AI SDK 6. Schemat w `lib/chat-result.ts` dopuszcza kategorie `sales`, `support`, `other`, priorytety `low`, `normal`, `high`, niepusty szkic do 4000 znaków i boolean `needs_review`. Priorytet domyślny to `normal`. JSON nie może zawierać dodatkowych kluczy. Pojedynek zachowuje tekstowy format odpowiedzi.
-
-Podczas generowania widać strumieniowy podgląd szkicu z informacją o sprawdzaniu. Dopiero poprawny, kompletny JSON jest zatwierdzany, dostępny do kopiowania i przekazywany w historii. Odmowa sygnalizowana przez dostawcę jako `content-filter`, limit długości, błąd formatu lub schematu kończą się komunikatem błędu. Niepełny szkic znika i nie trafia do kopii ani historii. Schemat weryfikuje strukturę i typy, nie prawdziwość treści. Wybrany model musi obsługiwać JSON Schema; aplikacja nie podmienia go i nie ponawia automatycznie wywołań.
-
-Test ręczny: po zalogowaniu wyślij do obu modeli „Nie mogę się zalogować.”. Sprawdź kategorię `support`, boolean `needs_review`, szkic po polsku oraz cztery pola po rozwinięciu „JSON”. Sprawdź też kolejną wiadomość w tej samej rozmowie. Automatyczne testy `structured-chat.test.mjs` używają prawdziwego AI SDK, providera OpenRouter z lokalną atrapą HTTP i atrapy modelu Gemini; sprawdzają schemat, odmowę, ucięcie, błędy i historię bez połączeń z modelami.
+Widok analizy pokazuje czytelne pola bez rozwijanego JSON i przycisków kopiowania JSON. Zwykłe kopie nadal zawierają informację „Do sprawdzenia” i needs_review. Structured output i walidacja czterech pól pozostają po stronie serwera; zwykły czat zachowuje swoje opcje JSON.
