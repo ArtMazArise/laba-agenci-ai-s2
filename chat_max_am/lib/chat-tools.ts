@@ -18,7 +18,31 @@ export function messageText(message: Pick<UIMessage, "parts">) {
 }
 
 export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string) {
-  return `${message.role === "assistant" ? assistantName : "Ty"}: ${messageText(message)}`;
+  return `${message.role === "assistant" ? assistantName : "Ty"}: ${clientMessageText(message)}`;
+}
+
+export function assistantPresentation(text: string) {
+  if (!text || "Kategoria:".startsWith(text) || /^Kategoria\s*:/i.test(text)) {
+    const category = text.match(/^Kategoria\s*:\s*(sales|support|other)\b/i)?.[1].toLowerCase();
+    const sketch = text.match(/(?:^|\n)Szkic\s*:[ \t]*([\s\S]*)/i)?.[1] ?? "";
+    // Podczas streamingu nie pokazuj nawet części nagłówka notatki.
+    const lines = sketch.split("\n");
+    const end = lines.findIndex((line) => {
+      const value = line.trim();
+      return value !== "" && ("Do sprawdzenia:".toLowerCase().startsWith(value.toLowerCase()) || /^Do sprawdzenia\s*:|^needs_review\b/i.test(value));
+    });
+    return {
+      text: (end < 0 ? lines : lines.slice(0, end)).join("\n").trim(),
+      category,
+      review: text.match(/(?:^|\n)needs_review\s*=\s*(true|false)\b/i)?.[1].toLowerCase(),
+    };
+  }
+  return { text, category: undefined, review: undefined };
+}
+
+export function clientMessageText(message: Pick<UIMessage, "role" | "parts">) {
+  const text = messageText(message);
+  return message.role === "assistant" ? assistantPresentation(text).text : text;
 }
 
 export function formatConversation(messages: UIMessage[], assistantName: string) {
@@ -40,7 +64,7 @@ export function formatCombinedConversation(openrouter: UIMessage[], google: UIMe
           groups.set(key, current);
         }
       } else if (message.role === "assistant" && current) {
-        const text = messageText(message);
+        const text = clientMessageText(message);
         if (text) current[provider].push(text);
       }
     }

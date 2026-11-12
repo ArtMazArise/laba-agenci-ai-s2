@@ -9,7 +9,7 @@ import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -80,10 +80,14 @@ function ChatPanel({ chat, title, dueling, canDuel, onStartDuel }: {
   return <div className="chat-panel">
     <div className="chat-topbar"><span><Skull /> {title}</span><div className="chat-topbar-actions"><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span><div className="copy-clear-controls"><CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button></div></div></div>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
-      {chat.messages.map((item) => <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
-        <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}</span><CopyButton text={messageText(item).trim() ? formatMessage(item, title) : ""} /></div>
-        <span>{messageText(item)}</span>
-      </div></div>)}
+      {chat.messages.map((item) => {
+        const presentation = item.role === "assistant" ? assistantPresentation(messageText(item)) : { text: messageText(item), category: undefined, review: undefined };
+        return <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
+          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}</span><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title) : ""} /></div>
+          <span>{presentation.text}</span>
+          {(presentation.category || presentation.review) && <small className="message-metadata">{[presentation.category, presentation.review].filter(Boolean).join(" · ")}</small>}
+        </div></div>;
+      })}
     </section>
     <div className="panel-feedback">
       {chat.isBusy && <p className="chat-feedback" role="status">{chat.status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}

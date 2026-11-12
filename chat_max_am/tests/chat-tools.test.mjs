@@ -12,6 +12,25 @@ await module.link(() => { throw Error("Unexpected runtime import"); });
 await module.evaluate();
 const { parseTestQuestions, messageText, formatMessage, formatConversation, formatCombinedConversation, broadcastMessage } = module.namespace;
 
+test("widok klienta i kopie zawierają szkic bez notatki; metadane są oddzielne", () => {
+  const text = "Kategoria: support  \nSzkic: Napisz proszę, jaki komunikat pojawia się podczas logowania.  \nDo sprawdzenia: przyczyna problemu.  \nneeds_review = true";
+  const result = module.namespace.assistantPresentation(text);
+  assert.equal(result.text, "Napisz proszę, jaki komunikat pojawia się podczas logowania.");
+  assert.equal(result.category, "support");
+  assert.equal(result.review, "true");
+  const question = { id: "u1", role: "user", parts: [{ type: "text", text: "Nie mogę się zalogować." }] };
+  const reply = { id: "a1", role: "assistant", parts: [{ type: "text", text }] };
+  for (const copy of [formatMessage(reply, "MAX"), formatConversation([question, reply], "MAX"), formatCombinedConversation([question, reply], [])]) {
+    assert.match(copy, /Napisz proszę/);
+    assert.doesNotMatch(copy, /Kategoria|Szkic:|Do sprawdzenia|needs_review/);
+  }
+  for (let length = 0; length <= text.length; length++) {
+    const partial = module.namespace.assistantPresentation(text.slice(0, length));
+    assert.ok(result.text.startsWith(partial.text));
+  }
+  assert.equal(module.namespace.assistantPresentation("Zwykła odpowiedź pojedynku.").text, "Zwykła odpowiedź pojedynku.");
+});
+
 test("pytania JSON: pusta lista, błędy, polskie znaki, powtórzenia", () => {
   for (const value of ["{}", '{"questions":[]}']) {
     const parsed = parseTestQuestions(value);
@@ -134,7 +153,7 @@ test("włączona lista odczytuje prawdziwy plik z obiektem i pytaniem o pizzę",
   const { result, reads } = await questionLoader(" TRUE ", contents);
   assert.equal(reads, 1);
   assert.equal(result.invalid, false);
-  assert.equal(result.questions.length, 10);
+  assert.equal(result.questions.length, 12);
   assert.ok(result.questions.includes("Daj przepis na dobrą pizzę"));
 });
 

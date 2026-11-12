@@ -123,3 +123,5 @@ input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-
 @media (max-width: 1000px) { .arena { width: calc(100% - 32px); } .arena header { padding-right: 135px; min-height: 165px; } .skeleton { top: 30px; width: 60px; opacity: .65; } .skeleton-left { left: auto; right: 82px; } .skeleton-right { right: 16px; } .skull-two { display: none; } }
 @media (max-width: 520px) { main { margin-top: 36px; } .eyebrow { font-size: 8px; letter-spacing: 2px; } .conversation { height: 45vh; } form { padding: 12px; gap: 8px; } input { padding: 12px; font-size: 14px; } button { padding: 12px 18px; } .chat-topbar { padding: 15px; letter-spacing: 1px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+.message-metadata { display: block; margin-top: 8px; color: #98a38e; font-size: 10px; white-space: normal; }
