@@ -22,6 +22,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   const providerCalls = [];
   const unexpectedModel = () => { modelCalls += 1; throw Error("Model must not be called"); };
   const sources = {
+  "@/lib/chat-result": "../lib/chat-result.ts",
     "@/lib/auth": "../lib/auth.ts",
     "./auth-blob": "../lib/auth-blob.ts",
     "@/lib/login-jokes": "../lib/login-jokes.ts",
@@ -68,7 +69,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       }).outputText, { context, identifier: name });
     } else {
-      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText"]
+      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse"]
         : name === "@ai-sdk/google" ? ["createGoogleGenerativeAI"]
         : name === "@openrouter/ai-sdk-provider" ? ["createOpenRouter"] : null;
       if (!exports) throw Error(`Unexpected import: ${name}`);

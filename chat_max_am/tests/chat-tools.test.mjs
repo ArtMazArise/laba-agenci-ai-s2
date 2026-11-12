@@ -5,12 +5,64 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const source = await readFile(new URL("../lib/chat-tools.ts", import.meta.url), "utf8");
+const toolsContext = vm.createContext({});
+const schemaModule = new vm.SourceTextModule(ts.transpileModule(await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText, { context: toolsContext });
+await schemaModule.link(() => {});
 const module = new vm.SourceTextModule(ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText, { context: vm.createContext({}) });
-await module.link(() => { throw Error("Unexpected runtime import"); });
+}).outputText, { context: toolsContext });
+await module.link((name) => { if (name === "./chat-result") return schemaModule; throw Error("Unexpected runtime import"); });
 await module.evaluate();
 const { parseTestQuestions, messageText, formatMessage, formatConversation, formatCombinedConversation, broadcastMessage } = module.namespace;
+
+test("kopiuj z JSON: wiadomość i cały czat zawierają szkic oraz zatwierdzony obiekt", () => {
+  const data = { category: "support", priority: "normal", draft: "Jaki komunikat widzisz?", needs_review: true };
+  const user = { id: "u", role: "user", parts: [{ type: "text", text: "Nie mogę się zalogować." }] };
+  const reply = { id: "a", role: "assistant", parts: [{ type: "data-chat-result", data }] };
+  assert.equal(formatMessage(reply, "MAX", true), `MAX: ${data.draft}\nJSON:\n${JSON.stringify(data, null, 2)}`);
+  assert.equal(formatMessage(user, "MAX", true), formatMessage(user, "MAX"));
+  assert.equal(formatConversation([user, reply], "MAX", true), `${formatMessage(user, "MAX")}\n${"-".repeat(63)}\n${formatMessage(reply, "MAX", true)}`);
+  assert.doesNotMatch(formatConversation([user, reply], "MAX"), /JSON:|needs_review/);
+  const preview = { id: "p", role: "assistant", parts: [{ type: "data-chat-preview", data: "Częściowa odpowiedź" }] };
+  assert.equal(formatConversation([preview], "MAX", true), "");
+});
+
+test("kopiuj całość z JSON zachowuje wspólne pytanie raz i kolejność obu modeli", () => {
+  const question = { id: "u", role: "user", metadata: { sharedTurnId: "t" }, parts: [{ type: "text", text: "Pomocy" }] };
+  const data = { category: "support", priority: "high", draft: "Odpowiedź Routera", needs_review: true };
+  const reply = { id: "a", role: "assistant", parts: [{ type: "data-chat-result", data }] };
+  const gemini = { id: "g", role: "assistant", parts: [{ type: "data-chat-result", data: { ...data, draft: "Odpowiedź Gemini" } }] };
+  const combined = formatCombinedConversation([question, reply], [question, gemini], true);
+  assert.equal(combined.match(/Ty: Pomocy/g).length, 1);
+  assert.equal(combined.match(/JSON:/g).length, 2);
+  assert.ok(combined.indexOf("MAX · OpenRouter") < combined.indexOf("MAX · Gemini"));
+  assert.match(combined, /"needs_review": true/);
+  const single = formatCombinedConversation([question, reply], [], true);
+  assert.equal(single.match(/JSON:/g).length, 1);
+  assert.doesNotMatch(single, /MAX · Gemini/);
+});
+
+test("JSON w czacie: pokazuje i kopiuje tylko zatwierdzony draft, pomija podgląd", () => {
+  const result = { category: "support", priority: "high", draft: "Napisz proszę, jaki komunikat widzisz.", needs_review: true };
+  const message = { id: "a", role: "assistant", parts: [{ type: "data-chat-preview", data: "Niepełny szkic" }, { type: "data-chat-result", data: result }] };
+  assert.equal(messageText(message), result.draft);
+  assert.equal(module.namespace.messageResult(message), result);
+  assert.equal(formatMessage(message, "MAX"), `MAX: ${result.draft}`);
+  assert.equal(messageText({ parts: message.parts.slice(0, 1) }), "");
+  assert.equal(formatConversation([{ ...message, parts: message.parts.slice(0, 1) }], "MAX"), "");
+  assert.equal(messageText({ parts: [{ type: "data-chat-result", data: { ...result, needs_review: "true" } }] }), "");
+});
+
+test("schemat odrzuca brakujące pola, puste szkice, nieznane wartości i nadmiarowe klucze", () => {
+  const valid = { category: "sales", priority: "normal", draft: "Dziękuję za wiadomość.", needs_review: false };
+  const { isChatResult } = schemaModule.namespace;
+  assert.equal(isChatResult(valid), true);
+  for (const value of [null, [], {}, { ...valid, category: "billing" }, { ...valid, priority: "urgent" }, { ...valid, draft: " " }, { ...valid, draft: "x".repeat(4001) }, { ...valid, needs_review: 1 }, { ...valid, extra: 1 }]) assert.equal(isChatResult(value), false);
+  for (const key of Object.keys(valid)) {
+    const missing = { ...valid }; delete missing[key];
+    assert.equal(isChatResult(missing), false);
+  }
+});
 
 test("widok klienta i kopie zawierają szkic bez notatki; metadane są oddzielne", () => {
   const text = "Kategoria: support  \nSzkic: Napisz proszę, jaki komunikat pojawia się podczas logowania.  \nDo sprawdzenia: przyczyna problemu.  \nneeds_review = true";

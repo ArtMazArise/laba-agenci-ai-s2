@@ -9,7 +9,7 @@ import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -78,14 +78,21 @@ function ChatPanel({ chat, title, dueling, canDuel, onStartDuel }: {
   }
 
   return <div className="chat-panel">
-    <div className="chat-topbar"><span><Skull /> {title}</span><div className="chat-topbar-actions"><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span><div className="copy-clear-controls"><CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button></div></div></div>
+    <div className="chat-topbar"><span><Skull /> {title}</span><div className="chat-topbar-actions"><span className="status">{chat.isBusy ? "MAX MYŚLI…" : "KRYPTA OTWARTA"}</span><div className="copy-clear-controls"><CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button></div></div></div>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
       {chat.messages.map((item) => {
+        const result = messageResult(item);
+        const preview = item.parts.find((part) => part.type === "data-chat-preview");
+        const previewText = chat.isBusy && item === chat.messages.at(-1) && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         const presentation = item.role === "assistant" ? assistantPresentation(messageText(item)) : { text: messageText(item), category: undefined, review: undefined };
         return <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
-          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}</span><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title) : ""} /></div>
-          <span>{presentation.text}</span>
-          {(presentation.category || presentation.review) && <small className="message-metadata">{[presentation.category, presentation.review].filter(Boolean).join(" · ")}</small>}
+          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}</span><div className="message-copy-controls"><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title) : ""} /><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, true) : ""} label="Kopiuj z JSON" /></div></div>
+          <span>{presentation.text || previewText}</span>
+          {!chat.isBusy && !result && preview && <small className="message-metadata">Odpowiedź nie została zatwierdzona.</small>}
+          {!result && previewText && <small className="message-metadata">Odpowiedź w trakcie sprawdzania…</small>}
+          {result ? <small className="message-metadata">{result.category} · {result.priority} · {String(result.needs_review)}</small>
+            : (presentation.category || presentation.review) && <small className="message-metadata">{[presentation.category, presentation.review].filter(Boolean).join(" · ")}</small>}
+          {result && <div className="message-json message-metadata"><details><summary>JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details><CopyButton text={JSON.stringify(result, null, 2)} /></div>}
         </div></div>;
       })}
     </section>
@@ -263,6 +270,7 @@ export default function ChatArena({ enabled, roundsPerBatch = 5, appInfo, testQu
         </form>
         <div className="copy-clear-controls">
           <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages)} label="Kopiuj całość" />
+          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, true)} label="Kopiuj całość z JSON" />
           <button type="button" className="copy-button clear-chat-button" disabled={busy || dueling || sendingShared || (!openrouter.messages.length && !google.messages.length && !openrouter.error && !google.error && !turns && !duelError)} onClick={clearAllConversations}>Wyczyść całość</button>
         </div>
         {testQuestions.invalid && <p className="questions-error" role="alert">Nie można odczytać listy z config/test-questions.json. Sprawdź plik i format JSON. Nadal możesz wpisać własną wiadomość.</p>}

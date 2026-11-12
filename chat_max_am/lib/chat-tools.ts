@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import { isChatResult } from "./chat-result";
 
 export function parseTestQuestions(raw?: string): { questions: string[]; invalid: boolean } {
   if (!raw?.trim()) return { questions: [], invalid: true };
@@ -13,12 +14,25 @@ export function parseTestQuestions(raw?: string): { questions: string[]; invalid
 }
 
 export function messageText(message: Pick<UIMessage, "parts">) {
+  const result = message.parts.find((part) => part.type === "data-chat-result");
+  if (result && "data" in result && isChatResult(result.data)) return result.data.draft;
   return message.parts.filter((part) => part.type === "text").map((part) => part.text).join("")
     .replace(/\r\n?/g, "\n").replace(/\n(?:[\t ]*\n)+/g, "\n").trim();
 }
 
-export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string) {
-  return `${message.role === "assistant" ? assistantName : "Ty"}: ${clientMessageText(message)}`;
+export function messageResult(message: Pick<UIMessage, "parts">) {
+  const part = message.parts.find((part) => part.type === "data-chat-result");
+  return part && "data" in part && isChatResult(part.data) ? part.data : undefined;
+}
+
+function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: boolean) {
+  const text = clientMessageText(message);
+  const result = message.role === "assistant" ? messageResult(message) : undefined;
+  return withJson && result ? `${text}\nJSON:\n${JSON.stringify(result, null, 2)}` : text;
+}
+
+export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string, withJson = false) {
+  return `${message.role === "assistant" ? assistantName : "Ty"}: ${copyMessageText(message, withJson)}`;
 }
 
 export function assistantPresentation(text: string) {
@@ -45,11 +59,11 @@ export function clientMessageText(message: Pick<UIMessage, "role" | "parts">) {
   return message.role === "assistant" ? assistantPresentation(text).text : text;
 }
 
-export function formatConversation(messages: UIMessage[], assistantName: string) {
-  return messages.filter((message) => messageText(message).trim()).map((message) => formatMessage(message, assistantName)).join(`\n${"-".repeat(63)}\n`);
+export function formatConversation(messages: UIMessage[], assistantName: string, withJson = false) {
+  return messages.filter((message) => messageText(message).trim()).map((message) => formatMessage(message, assistantName, withJson)).join(`\n${"-".repeat(63)}\n`);
 }
 
-export function formatCombinedConversation(openrouter: UIMessage[], google: UIMessage[]) {
+export function formatCombinedConversation(openrouter: UIMessage[], google: UIMessage[], withJson = false) {
   type Group = { question: string; sentAt: number; order: number; openrouter: string[]; google: string[] };
   const groups = new Map<string, Group>();
   for (const [provider, messages] of [["openrouter", openrouter], ["google", google]] as const) {
@@ -64,7 +78,7 @@ export function formatCombinedConversation(openrouter: UIMessage[], google: UIMe
           groups.set(key, current);
         }
       } else if (message.role === "assistant" && current) {
-        const text = clientMessageText(message);
+        const text = copyMessageText(message, withJson);
         if (text) current[provider].push(text);
       }
     }
