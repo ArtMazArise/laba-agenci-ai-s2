@@ -6,6 +6,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import * as ai from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 
 // Prawdziwy SDK i provider, wyłącznie lokalne atrapy odpowiedzi HTTP. Bez sieci i sekretów.
@@ -14,7 +15,7 @@ const routeSource = await readFile(new URL("../app/api/chat/route.ts", import.me
 const schemaSource = await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8");
 const compile = (source) => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {} } = {}) {
+async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText } = {}) {
   const requests = [];
   const router = createOpenRouter({
     apiKey: "test-only-key",
@@ -22,21 +23,34 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
       requests.push(JSON.parse(init.body));
       if (providerError) return new Response(JSON.stringify({ error: { message: "PRIVATE_PROVIDER_DETAILS" } }), { status: providerError === true ? 503 : providerError, headers: { "content-type": "application/json" } });
       if (disconnected) return new Response(new ReadableStream({ start(controller) { controller.error(new Error("PRIVATE_PROVIDER_DETAILS")); } }), { headers: { "content-type": "text/event-stream" } });
+      if (streamErrorCode) return new Response(`data: ${JSON.stringify({ error: { code: streamErrorCode, message: "PRIVATE_PROVIDER_DETAILS", metadata: { raw: "PRIVATE_RAW_DETAILS" } } })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
       const chunks = [
-        ...[text.slice(0, 55), text.slice(55)].filter(Boolean).map((content) => ({ id: "test", choices: [{ index: 0, delta: { content }, finish_reason: null }] })),
+
+        ...[text.slice(0, 55), text.slice(55)].filter(Boolean).map((content) => ({ id: "test", choices: [{ index: 0, delta: { content, annotations: citations.map((c) => ({ type: "url_citation", url_citation: { url: c.url, title: c.title, start_index: 0, end_index: 10 } })) }, finish_reason: null }] })),
         { id: "test", choices: [{ index: 0, delta: {}, finish_reason: reason === "content-filter" ? "content_filter" : reason }] },
       ];
       return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     },
   });
+  let googleAttempts = 0;
   const google = new MockLanguageModelV3({ doStream: async () => {
+    googleAttempts++;
+    const quotaError = () => new ai.APICallError({ message: "PRIVATE_QUOTA_DETAILS", url: "http://test", requestBodyValues: {}, statusCode: 429 });
+    if (googleQuotaFirst && googleAttempts === 1 && !quotaAfterPreview) throw quotaError();
+    const currentText = googleQuotaFirst && googleAttempts > 1 && fallbackText !== undefined ? fallbackText : text;
     if (providerError) throw new ai.APICallError({ message: "PRIVATE_PROVIDER_DETAILS", url: "http://test", requestBodyValues: {}, statusCode: providerError === true ? 503 : providerError });
     return { stream: new ReadableStream({ start(controller) {
     if (disconnected) { controller.error(new Error("PRIVATE_PROVIDER_DETAILS")); return; }
     controller.enqueue({ type: "stream-start", warnings: unsupportedWarning ? [{ type: "unsupported", feature: "responseFormat" }] : [] });
+    for (const [index, citation] of citations.entries()) controller.enqueue({ type: "source", sourceType: "url", id: `s${index}`, ...citation });
     controller.enqueue({ type: "text-start", id: "t" });
-    controller.enqueue({ type: "text-delta", id: "t", delta: text });
+    controller.enqueue({ type: "text-delta", id: "t", delta: currentText });
     controller.enqueue({ type: "text-end", id: "t" });
+    if (googleQuotaFirst && googleAttempts === 1 && quotaAfterPreview) {
+      controller.enqueue({ type: "error", error: quotaError() });
+      controller.enqueue({ type: "finish", finishReason: { unified: "error", raw: "error" }, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
+      controller.close(); return;
+    }
     controller.enqueue({ type: "finish", finishReason: { unified: reason, raw: reason }, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
     controller.close();
   } }) }; } });
@@ -46,7 +60,7 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
   await schema.link(() => {});
   const aiModule = new vm.SyntheticModule(Object.keys(ai), function () { for (const key of Object.keys(ai)) this.setExport(key, ai[key]); }, { context });
   const routerModule = new vm.SyntheticModule(["createOpenRouter"], function () { this.setExport("createOpenRouter", () => router); }, { context });
-  const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", () => () => google); }, { context });
+  const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", () => Object.assign(() => google, { tools: createGoogleGenerativeAI({ apiKey: "fake-key" }).tools })); }, { context });
   const auth = new vm.SyntheticModule(["requireSession"], function () { this.setExport("requireSession", async () => null); }, { context });
   const route = new vm.SourceTextModule(compile(routeSource), { context });
   await route.link((name) => ({ "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
@@ -212,4 +226,80 @@ test("API używa modelu z config.json, a false w pliku blokuje obu dostawców mi
   }
   assert.equal(disabled.requests.length, 0);
   assert.equal(disabled.google.doStreamCalls.length, 0);
+});
+
+test("źródła przechodzą przez prawdziwy SDK do przeglądarki z datą odbioru, w każdym trybie", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    for (const mode of ["chat", "analysis", "duel"]) {
+      const citation = { url: "https://example.com/current", title: "Aktualne informacje" };
+      const app = await setup({ citations: [citation] });
+      const { chunks } = await app.post(provider, undefined, mode);
+      const source = chunks.find((chunk) => chunk.type === "source-url");
+      assert.equal(source?.url, citation.url);
+      assert.equal(source.title, citation.title);
+      const stamp = chunks.find((chunk) => chunk.type === "data-source-fetched" && chunk.data.sourceId === source.sourceId);
+      assert.ok(Number.isFinite(Date.parse(stamp?.data.fetchedAt)));
+      if (mode !== "duel") assert.ok(chunks.some((chunk) => chunk.type === "data-chat-result"));
+      if (provider === "openrouter") {
+        assert.deepEqual(app.requests[0].tools.find((tool) => tool.type === "openrouter:web_search"), { type: "openrouter:web_search", max_results: 3, engine: "native" });
+      } else assert.ok(app.google.doStreamCalls[0].tools.some((tool) => tool.id === "google.google_search"));
+    }
+  }
+});
+
+test("błędy OpenRouter wewnątrz SSE HTTP 200 zachowują kod i nie wyciekają do przeglądarki", async () => {
+  for (const [code, expected] of [[400, /HTTP 400.*wyszukiwanie i JSON Schema/], [402, /Brak środków/], [429, /HTTP 429/], [503, /przeciążony|niedostępny/]]) {
+    const app = await setup({ streamErrorCode: code });
+    const { chunks, text } = await app.post();
+    assert.match(chunks.find((chunk) => chunk.type === "error")?.errorText ?? "", expected);
+    assert.ok(!chunks.some((chunk) => chunk.type === "data-chat-result"));
+    assert.doesNotMatch(text, /PRIVATE_PROVIDER_DETAILS|PRIVATE_RAW_DETAILS|test-only-key/);
+    assert.equal(app.requests.length, 1);
+  }
+});
+
+test("Gemini 429: jedna próba bez narzędzi, ten sam model i historia, jawny brak wyszukiwania", async () => {
+  for (const mode of ["chat", "analysis", "duel"]) {
+    const data = { category: "unknown", priority: "normal", draft: "Nie mogę teraz sprawdzić aktualnego kursu euro.", needs_review: true };
+    const app = await setup({ googleQuotaFirst: true, fallbackText: mode === "duel" ? data.draft : JSON.stringify(data) });
+    const { chunks, text } = await app.post("google", undefined, mode);
+    assert.equal(app.google.doStreamCalls.length, 2);
+    const [first, second] = app.google.doStreamCalls;
+    assert.ok(first.tools.some((tool) => tool.id === "google.google_search"));
+    assert.ok(!second.tools?.length);
+    assert.deepEqual(first.prompt.filter((p) => p.role !== "system"), second.prompt.filter((p) => p.role !== "system"));
+    assert.match(second.prompt[0].content, /Wyszukiwanie jest wyłączone/);
+    assert.match(second.prompt[0].content, /nie podawaj kursu, aktualnej ceny ani źródła z pamięci/);
+    assert.ok(chunks.some((c) => c.type === "data-search-fallback" && c.data === "quota"));
+    assert.ok(!chunks.some((c) => c.type === "source-url" || c.type === "error"));
+    if (mode !== "duel") assert.deepEqual(chunks.find((c) => c.type === "data-chat-result")?.data, data);
+    else assert.equal(chunks.find((c) => c.type === "text-delta")?.delta, data.draft);
+    assert.doesNotMatch(text, /PRIVATE_QUOTA_DETAILS/);
+  }
+});
+
+test("Gemini: 429 także bez wyszukiwania kończy się błędem po dwóch próbach, bez pozornego wyniku", async () => {
+  const app = await setup({ providerError: 429 });
+  const { chunks, text } = await app.post("google");
+  assert.equal(app.google.doStreamCalls.length, 2);
+  assert.match(chunks.find((c) => c.type === "error")?.errorText ?? "", /limit także bez wyszukiwania/);
+  assert.ok(!chunks.some((c) => c.type === "data-chat-result"));
+  assert.doesNotMatch(text, /PRIVATE_PROVIDER_DETAILS/);
+});
+
+test("fallback usuwa niepełny podgląd i nie przenosi źródeł nieudanej próby", async () => {
+  const app = await setup({ googleQuotaFirst: true, quotaAfterPreview: true, citations: [{ url: "https://example.org/old", title: "Stare źródło" }] });
+  const { chunks } = await app.post("google");
+  assert.equal(app.google.doStreamCalls.length, 2);
+  assert.ok(chunks.some((c) => c.type === "data-chat-preview" && c.data === ""));
+  assert.ok(chunks.some((c) => c.type === "data-chat-result"));
+  assert.ok(!chunks.some((c) => c.type === "source-url" || c.type === "data-source-fetched"));
+});
+
+test("błędny JSON drugiej próby Gemini nadal podlega walidacji", async () => {
+  const app = await setup({ googleQuotaFirst: true, fallbackText: '{"draft":"brak pozostałych pól"}' });
+  const { chunks } = await app.post("google");
+  assert.equal(app.google.doStreamCalls.length, 2);
+  assert.ok(chunks.some((c) => c.type === "error"));
+  assert.ok(!chunks.some((c) => c.type === "data-chat-result"));
 });

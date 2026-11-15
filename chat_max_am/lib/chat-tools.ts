@@ -7,6 +7,32 @@ export function formatResponseTime(milliseconds?: number) {
   return rounded < 1000 ? `${rounded} ms` : `${(rounded / 1000).toLocaleString("pl-PL", { maximumFractionDigits: 2 })} s`;
 }
 
+export function messageSources(message: Pick<UIMessage, "parts">) {
+  const sources: { url: string; title: string; fetchedAt?: string }[] = [];
+  if (messageHasSearchFallback(message)) return sources;
+  const seen = new Set<string>();
+  for (const part of message.parts) {
+    if (part.type !== "source-url") continue;
+    let url: URL;
+    try { url = new URL(part.url); } catch { continue; }
+    if (!["http:", "https:"].includes(url.protocol) || seen.has(url.href)) continue;
+    seen.add(url.href);
+    const stamp = message.parts.find((p) => p.type === "data-source-fetched" && p.data && typeof p.data === "object" && "sourceId" in p.data && p.data.sourceId === part.sourceId);
+    const fetchedAt = stamp && "data" in stamp && stamp.data && typeof stamp.data === "object" && "fetchedAt" in stamp.data && typeof stamp.data.fetchedAt === "string" ? stamp.data.fetchedAt : undefined;
+    sources.push({ url: url.href, title: part.title?.trim() || url.hostname, fetchedAt });
+  }
+  return sources;
+}
+
+export function messageHasSearchFallback(message: Pick<UIMessage, "parts">) {
+  return message.parts.some((part) => part.type === "data-search-fallback" && part.data === "quota");
+}
+
+export function formatSourceDate(iso?: string) {
+  if (!iso || !Number.isFinite(new Date(iso).getTime())) return "brak danych";
+  return new Intl.DateTimeFormat("pl-PL", { timeZone: "Europe/Warsaw", dateStyle: "short", timeStyle: "medium" }).format(new Date(iso));
+}
+
 export function parseTestQuestions(raw?: string): { questions: string[]; invalid: boolean } {
   if (!raw?.trim()) return { questions: [], invalid: true };
   try {
@@ -39,7 +65,8 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
   const review = result?.needs_review ?? (legacyReview === undefined ? undefined : legacyReview === "true");
   const legacyNote = message.role === "assistant" && !result ? raw.match(/(?:^|\n)Do sprawdzenia(?: przez pracownika)?\s*:[ \t]*([\s\S]*?)(?=\nneeds_review\s*=|$)/i)?.[1].trim() : undefined;
   const note = legacyNote || (review ? "Wymagana weryfikacja przez pracownika." : "Brak");
-  const copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
+  let copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
+  if (message.role === "assistant" && messageHasSearchFallback(message)) copy += "\nBez wyszukiwania — limit API. Bieżące dane nie zostały zweryfikowane w internecie.";
   return withJson && result ? `${copy}\nJSON:\n${JSON.stringify(result, null, 2)}` : copy;
 }
 

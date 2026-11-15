@@ -195,3 +195,10 @@ input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-
 
 .response-time { color: #98a38e; font-size: 10px; font-weight: 400; letter-spacing: 0; margin-left: 6px; white-space: nowrap; }
 .panel-title { flex-wrap: wrap; }
+
+.message-sources { margin-top: 14px; padding-top: 10px; border-top: 1px solid #343d32; white-space: normal; font-size: 12px; }
+.message-sources h4 { margin: 0 0 7px; color: #bdff59; font-size: 12px; }
+.message-sources ul { margin: 0; padding-left: 18px; }
+.message-sources li { margin-bottom: 8px; }
+.message-sources a { color: #c9ef9e; overflow-wrap: anywhere; text-decoration: underline; }
+.message-sources small { display: block; color: #98a38e; margin-top: 2px; font-size: 10px; }

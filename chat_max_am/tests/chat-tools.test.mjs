@@ -8,7 +8,7 @@ import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
 const source = await readFile(new URL("../lib/chat-tools.ts", import.meta.url), "utf8");
-const toolsContext = vm.createContext({});
+const toolsContext = vm.createContext({ URL });
 const schemaModule = new vm.SourceTextModule(ts.transpileModule(await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText, { context: toolsContext });
 await schemaModule.link(() => {});
 const module = new vm.SourceTextModule(ts.transpileModule(source, {
@@ -25,6 +25,35 @@ test("czas odpowiedzi: milisekundy, sekundy i brak nieprawidłowego pomiaru", ()
   assert.equal(format(1000), "1 s");
   assert.equal(format(999.6), "1 s");
   for (const value of [undefined, NaN, Infinity, -1]) assert.equal(format(value), "");
+});
+
+test("źródła: tytuły, deduplikacja, bezpieczne linki i zapisany czas Warszawy", () => {
+  const message = { parts: [
+    { type: "source-url", sourceId: "s1", url: "https://example.com/news", title: "Wiadomości" },
+    { type: "source-url", sourceId: "s2", url: "https://example.com/news", title: "Duplikat" },
+    { type: "source-url", sourceId: "s3", url: "javascript:alert(1)", title: "Niedozwolone" },
+    { type: "source-url", sourceId: "s4", url: "https://example.org/page" },
+    { type: "data-source-fetched", data: { sourceId: "s1", fetchedAt: "2026-11-13T08:10:11Z" } },
+  ] };
+  const sources = module.namespace.messageSources(message);
+  assert.equal(sources.length, 2);
+  assert.equal(sources[0].title, "Wiadomości");
+  assert.equal(sources[0].fetchedAt, "2026-11-13T08:10:11Z");
+  assert.equal(sources[1].title, "example.org");
+  assert.match(module.namespace.formatSourceDate(sources[0].fetchedAt), /09:10:11/);
+  assert.equal(module.namespace.formatSourceDate(), "brak danych");
+  assert.equal(module.namespace.formatSourceDate("niepoprawna data"), "brak danych");
+});
+
+test("odpowiedź bez wyszukiwania ma informację w kopii i nie pokazuje starych źródeł", () => {
+  const message = { role: "assistant", parts: [
+    { type: "data-search-fallback", data: "quota" },
+    { type: "source-url", sourceId: "old", url: "https://example.org", title: "Stare źródło" },
+    { type: "data-chat-result", data: { category: "unknown", priority: "normal", draft: "Brak aktualnych danych.", needs_review: true } },
+  ] };
+  assert.equal(module.namespace.messageHasSearchFallback(message), true);
+  assert.equal(module.namespace.messageSources(message).length, 0);
+  assert.match(formatMessage(message, "MAX"), /Bez wyszukiwania — limit API/);
 });
 
 test("kopie dodają status sprawdzenia, bez dopisywania pola do JSON i bez zmiany widoku", () => {
@@ -313,7 +342,7 @@ test("włączona lista odczytuje prawdziwy plik z obiektem i pytaniem o pizzę",
   const { result, reads } = await questionLoader(" TRUE ", contents);
   assert.equal(reads, 1);
   assert.equal(result.invalid, false);
-  assert.equal(result.questions.length, 12);
+  assert.equal(result.questions.length, 13);
   assert.ok(result.questions.includes("Daj przepis na dobrą pizzę"));
 });
 

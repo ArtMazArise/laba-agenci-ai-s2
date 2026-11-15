@@ -76,7 +76,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       }).outputText, { context, identifier: name });
     } else {
-      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse"]
+      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs"]
         : name === "@ai-sdk/google" ? ["createGoogleGenerativeAI"]
         : name === "@openrouter/ai-sdk-provider" ? ["createOpenRouter"] : null;
       if (!exports) throw Error(`Unexpected import: ${name}`);

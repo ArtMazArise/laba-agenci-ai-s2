@@ -1,7 +1,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
 
 import { createDuelPause, runDuel } from "@/lib/duel";
@@ -10,7 +10,7 @@ import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -121,6 +121,16 @@ function PanelHeading({ title, modelName, chat, responseTime, children }: {
   </div>;
 }
 
+function Sources({ message }: { message: UIMessage }) {
+  if (messageHasSearchFallback(message)) return <p className="message-metadata">Bez wyszukiwania — limit API. Bieżące dane nie zostały zweryfikowane w internecie.</p>;
+  const sources = messageSources(message);
+  if (!sources.length) return null;
+  return <div className="message-sources"><h4>Źródła</h4><ul>{sources.map((source) => <li key={source.url}>
+    <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
+    <small>pobrano: {formatSourceDate(source.fetchedAt)}</small>
+  </li>)}</ul></div>;
+}
+
 function ResponseTime({ milliseconds }: { milliseconds?: number }) {
   const label = formatResponseTime(milliseconds);
   return label ? <small className="response-time" title="Czas od wysłania zapytania do odebrania pełnej odpowiedzi, wraz z walidacją">· {label}</small> : null;
@@ -187,6 +197,7 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
               </dl>
               <h3>Szkic odpowiedzi</h3><p className="analysis-draft">{result.draft}</p>
               <p className="message-metadata">To nadal szkic, także gdy sprawdzenie nie jest wymagane.</p>
+              {reply && <Sources message={reply} />}
             </> : chat.isBusy ? <><p>MAX myśli… sprawdza wiadomość…</p><p className="analysis-draft">{previewText}</p><small>Wynik w trakcie sprawdzania.</small></>
               : !chat.error && <p className="message-metadata">Tutaj pojawi się wynik analizy.</p>}
             {chat.error && <div className="chat-feedback chat-error chat-retry" role="alert"><span>{chat.error.message.startsWith("MAX:") ? chat.error.message : "Analiza została przerwana lub wystąpił błąd dostawcy."}</span><button type="button" className="copy-button" disabled={chat.isBusy} onClick={() => void chat.retryLastRequest()}>Ponów</button></div>}
@@ -241,6 +252,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
             ? `Kategoria: ${result.category} · Priorytet: ${result.priority} · Sprawdzenie: ${result.needs_review ? "wymagane" : "niewymagane"} — nadal szkic`
             : `${result.category} · ${result.priority} · ${String(result.needs_review)}`}</small>
             : (presentation.category || presentation.review) && <small className="message-metadata">{[presentation.category, presentation.review].filter(Boolean).join(" · ")}</small>}
+          {item.role === "assistant" && clientMessageText(item).trim() && <Sources message={item} />}
           {result && <div className="message-json message-metadata"><details><summary>JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details><CopyButton text={JSON.stringify(result, null, 2)} /></div>}
         </div></div>;
       })}

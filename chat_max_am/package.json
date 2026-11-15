@@ -1,6 +1,6 @@
 {
   "name": "max-chatbot",
-  "version": "0.3.6",
+  "version": "0.3.10",
   "private": true,
   "dependencies": {
     "@vercel/blob": "2.8.2",
