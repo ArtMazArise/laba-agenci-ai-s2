@@ -45,3 +45,11 @@ Gdy Gemini zwróci HTTP 429, aplikacja wykonuje dokładnie jedną dodatkową pr�
 Udana odpowiedź ma widoczny dopisek „Bez wyszukiwania — limit API”, także w kopii. Nie dostaje źródeł z nieudanej próby. Częściowy podgląd pierwszej próby jest usuwany przed nowym generowaniem. JSON nadal podlega temu samemu schematowi. Instrukcja bez wyszukiwania zabrania podawania z pamięci aktualnego kursu, ceny i niezweryfikowanego źródła; znane fakty firmy pozostają dostępne. Dla aktualnych danych bot ma wskazać brak możliwości weryfikacji.
 
 Jeśli również próba bez wyszukiwania zwróci 429, aplikacja wyświetla informację o limicie generowania odpowiedzi. Ten mechanizm nie obchodzi limitu całego modelu. Test w przeglądarce: ponów pytanie o kurs euro przy Gemini. Gdy wyszukiwanie ma limit, lecz generowanie nadal jest dostępne, oczekiwany jest szkic bez źródeł i jawna informacja o braku wyszukiwania. Testy automatyczne używają tylko atrap SDK i HTTP, nie wywołują modeli.
+
+## Lista użytych narzędzi
+
+`CHAT_SHOW_USED_TOOLS` w głównym `config.json` włącza (`true`) lub wyłącza (`false`) dopisek „użyto: web_search, google_search” dla nowych odpowiedzi i ich kopii. Gdy pola nie ma, obowiązuje env, a domyślnie lista jest włączona. Brak użytych narzędzi oznacza brak dopisku. Nie zmienia to czteropolowego schematu JSON.
+
+Lista pochodzi z wyników narzędzi SDK, źródeł i metadanych natywnego wyszukiwania (webSearchQueries), nie z tekstu wygenerowanego przez model ani samego faktu skonfigurowania narzędzia. Nieudana próba Gemini nie dopisuje narzędzia do późniejszej odpowiedzi bez wyszukiwania. Kopiowanie umieszcza „użyto” pod needs_review, jeśli odpowiedź ma ten status, lub na końcu tekstu odpowiedzi w pojedynku.
+
+Bieżący czas jest nadal przekazywany w instrukcji serwerowej każdego requestu przez zmienną `currentDateTime` w `app/api/chat/route.ts`. To nie jest osobne narzędzie function calling: aplikacja nie ma zarejestrowanego narzędzia `aktualnyCzas`. Funkcje pomocnicze takie jak `getAppInfo`, `getDuelBatchSize`, `getMaxAttempts` i `loadTestQuestions` nie są udostępnione modelowi jako narzędzia. Obecnie dostępne narzędzia modelu to gotowe `web_search` i `google_search`; nazwy zachowano.

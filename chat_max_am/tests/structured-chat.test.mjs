@@ -15,7 +15,7 @@ const routeSource = await readFile(new URL("../app/api/chat/route.ts", import.me
 const schemaSource = await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8");
 const compile = (source) => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText } = {}) {
+async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText, groundingQueries = [] } = {}) {
   const requests = [];
   const router = createOpenRouter({
     apiKey: "test-only-key",
@@ -51,7 +51,7 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
       controller.enqueue({ type: "finish", finishReason: { unified: "error", raw: "error" }, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
       controller.close(); return;
     }
-    controller.enqueue({ type: "finish", finishReason: { unified: reason, raw: reason }, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
+    controller.enqueue({ type: "finish", finishReason: { unified: reason, raw: reason }, providerMetadata: groundingQueries.length ? { google: { groundingMetadata: { webSearchQueries: groundingQueries } } } : undefined, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
     controller.close();
   } }) }; } });
   const context = vm.createContext({ Response, Request, process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
@@ -237,6 +237,7 @@ test("źródła przechodzą przez prawdziwy SDK do przeglądarki z datą odbioru
       const source = chunks.find((chunk) => chunk.type === "source-url");
       assert.equal(source?.url, citation.url);
       assert.equal(source.title, citation.title);
+      assert.deepEqual(chunks.find((c) => c.type === "data-used-tools")?.data, [provider === "google" ? "google_search" : "web_search"]);
       const stamp = chunks.find((chunk) => chunk.type === "data-source-fetched" && chunk.data.sourceId === source.sourceId);
       assert.ok(Number.isFinite(Date.parse(stamp?.data.fetchedAt)));
       if (mode !== "duel") assert.ok(chunks.some((chunk) => chunk.type === "data-chat-result"));
@@ -293,7 +294,7 @@ test("fallback usuwa niepełny podgląd i nie przenosi źródeł nieudanej prób
   assert.equal(app.google.doStreamCalls.length, 2);
   assert.ok(chunks.some((c) => c.type === "data-chat-preview" && c.data === ""));
   assert.ok(chunks.some((c) => c.type === "data-chat-result"));
-  assert.ok(!chunks.some((c) => c.type === "source-url" || c.type === "data-source-fetched"));
+  assert.ok(!chunks.some((c) => c.type === "source-url" || c.type === "data-source-fetched" || c.type === "data-used-tools"));
 });
 
 test("błędny JSON drugiej próby Gemini nadal podlega walidacji", async () => {
@@ -302,4 +303,22 @@ test("błędny JSON drugiej próby Gemini nadal podlega walidacji", async () => 
   assert.equal(app.google.doStreamCalls.length, 2);
   assert.ok(chunks.some((c) => c.type === "error"));
   assert.ok(!chunks.some((c) => c.type === "data-chat-result"));
+});
+
+test("lista narzędzi nie wynika z samej konfiguracji i można ją wyłączyć", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    const unused = await setup();
+    assert.ok(!(await unused.post(provider)).chunks.some((c) => c.type === "data-used-tools"));
+    const hidden = await setup({ publicConfig: { CHAT_SHOW_USED_TOOLS: false }, citations: [{ url: "https://example.org", title: "Źródło" }] });
+    const { chunks } = await hidden.post(provider);
+    assert.ok(chunks.some((c) => c.type === "source-url"));
+    assert.ok(!chunks.some((c) => c.type === "data-used-tools"));
+  }
+});
+
+test("Gemini raportuje wyszukiwanie potwierdzone metadanymi, także bez linków", async () => {
+  const app = await setup({ groundingQueries: ["aktualne informacje"] });
+  const { chunks } = await app.post("google");
+  assert.deepEqual(chunks.find((c) => c.type === "data-used-tools")?.data, ["google_search"]);
+  assert.ok(!chunks.some((c) => c.type === "source-url"));
 });

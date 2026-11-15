@@ -8,6 +8,7 @@ const kinds = {
   CHAT_MAX_ATTEMPTS: "number",
   CHAT_DUEL_ROUNDS: "number",
   CHAT_TEST_QUESTIONS_ENABLED: "boolean",
+  CHAT_SHOW_USED_TOOLS: "boolean",
   AUTH_LEARNING_MODE: "boolean",
   AUTH_STATE_DIR: "string",
 } as const;

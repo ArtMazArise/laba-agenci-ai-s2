@@ -27,6 +27,33 @@ test("czas odpowiedzi: milisekundy, sekundy i brak nieprawidłowego pomiaru", ()
   for (const value of [undefined, NaN, Infinity, -1]) assert.equal(format(value), "");
 });
 
+test("kopie czatu i całości umieszczają właściwy czas zaraz po autorze AI", () => {
+  const question = { id: "u", role: "user", metadata: { sharedTurnId: "t" }, parts: [{ type: "text", text: "Pytanie" }] };
+  const reply = { id: "a", role: "assistant", parts: [{ type: "text", text: "Odpowiedź" }] };
+  assert.match(formatConversation([question, reply], "MAX · OpenRouter", false, { a: 3400, u: 100 }), /MAX · OpenRouter\(3\.4s\): Odpowiedź/);
+  const copy = formatCombinedConversation([question, reply], [question, reply], false, { openrouter: { a: 3400 }, google: { a: 850 } });
+  assert.match(copy, /MAX · OpenRouter\(3\.4s\): Odpowiedź/);
+  assert.match(copy, /MAX · Gemini\(850ms\): Odpowiedź/);
+  assert.equal(copy.match(/Ty: Pytanie/g).length, 1);
+  assert.doesNotMatch(copy, /Ty\(/);
+  assert.equal(formatMessage(reply, "MAX", true, 3400), "MAX(3.4s): Odpowiedź");
+  assert.equal(formatMessage(reply, "MAX"), "MAX: Odpowiedź");
+});
+
+test("użyte narzędzia są deduplikowane i trafiają pod needs_review w każdej kopii", () => {
+  const question = { id: "u", role: "user", parts: [{ type: "text", text: "Pytanie" }] };
+  const message = { id: "a", role: "assistant", parts: [
+    { type: "data-chat-result", data: { category: "unknown", priority: "normal", draft: "Odpowiedź", needs_review: true } },
+    { type: "data-used-tools", data: ["web_search", "web_search", "customTool", null, 123, "<script>"] },
+  ] };
+  assert.equal(module.namespace.messageUsedTools(message).join(", "), "web_search, customTool");
+  for (const copy of [formatMessage(message, "MAX"), formatMessage(message, "MAX", true), formatConversation([question, message], "MAX"), formatCombinedConversation([question, message], [])]) {
+    assert.match(copy, /needs_review = true\nużyto: web_search, customTool/);
+  }
+  assert.equal(module.namespace.messageUsedTools(question).length, 0);
+  assert.doesNotMatch(formatMessage(question, "MAX"), /użyto:/);
+});
+
 test("źródła: tytuły, deduplikacja, bezpieczne linki i zapisany czas Warszawy", () => {
   const message = { parts: [
     { type: "source-url", sourceId: "s1", url: "https://example.com/news", title: "Wiadomości" },

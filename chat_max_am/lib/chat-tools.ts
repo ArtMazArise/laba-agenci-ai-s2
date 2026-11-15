@@ -28,6 +28,11 @@ export function messageHasSearchFallback(message: Pick<UIMessage, "parts">) {
   return message.parts.some((part) => part.type === "data-search-fallback" && part.data === "quota");
 }
 
+export function messageUsedTools(message: Pick<UIMessage, "parts">) {
+  const names = message.parts.flatMap((part) => part.type === "data-used-tools" && Array.isArray(part.data) ? part.data : []);
+  return [...new Set(names.filter((name): name is string => typeof name === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)))];
+}
+
 export function formatSourceDate(iso?: string) {
   if (!iso || !Number.isFinite(new Date(iso).getTime())) return "brak danych";
   return new Intl.DateTimeFormat("pl-PL", { timeZone: "Europe/Warsaw", dateStyle: "short", timeStyle: "medium" }).format(new Date(iso));
@@ -66,12 +71,16 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
   const legacyNote = message.role === "assistant" && !result ? raw.match(/(?:^|\n)Do sprawdzenia(?: przez pracownika)?\s*:[ \t]*([\s\S]*?)(?=\nneeds_review\s*=|$)/i)?.[1].trim() : undefined;
   const note = legacyNote || (review ? "Wymagana weryfikacja przez pracownika." : "Brak");
   let copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
+  const tools = message.role === "assistant" ? messageUsedTools(message) : [];
+  if (tools.length) copy += `\nużyto: ${tools.join(", ")}`;
   if (message.role === "assistant" && messageHasSearchFallback(message)) copy += "\nBez wyszukiwania — limit API. Bieżące dane nie zostały zweryfikowane w internecie.";
   return withJson && result ? `${copy}\nJSON:\n${JSON.stringify(result, null, 2)}` : copy;
 }
 
-export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string, withJson = false) {
-  return `${message.role === "assistant" ? assistantName : "Ty"}: ${copyMessageText(message, withJson)}`;
+export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string, withJson = false, responseTime?: number) {
+  const time = formatResponseTime(responseTime).replace(",", ".").replace(/\s/g, "");
+  const author = message.role === "assistant" ? `${assistantName}${time ? `(${time})` : ""}` : "Ty";
+  return `${author}: ${copyMessageText(message, withJson)}`;
 }
 
 export function assistantPresentation(text: string) {
@@ -100,11 +109,11 @@ export function clientMessageText(message: Pick<UIMessage, "role" | "parts">) {
   return message.role === "assistant" ? assistantPresentation(text).text : text;
 }
 
-export function formatConversation(messages: UIMessage[], assistantName: string, withJson = false) {
-  return messages.filter((message) => messageText(message).trim()).map((message) => formatMessage(message, assistantName, withJson)).join(`\n${"-".repeat(63)}\n`);
+export function formatConversation(messages: UIMessage[], assistantName: string, withJson = false, responseTimes: Record<string, number> = {}) {
+  return messages.filter((message) => messageText(message).trim()).map((message) => formatMessage(message, assistantName, withJson, responseTimes[message.id])).join(`\n${"-".repeat(63)}\n`);
 }
 
-export function formatCombinedConversation(openrouter: UIMessage[], google: UIMessage[], withJson = false) {
+export function formatCombinedConversation(openrouter: UIMessage[], google: UIMessage[], withJson = false, responseTimes: Partial<Record<"openrouter" | "google", Record<string, number>>> = {}) {
   type Group = { question: string; sentAt: number; order: number; openrouter: string[]; google: string[] };
   const groups = new Map<string, Group>();
   for (const [provider, messages] of [["openrouter", openrouter], ["google", google]] as const) {
@@ -120,14 +129,14 @@ export function formatCombinedConversation(openrouter: UIMessage[], google: UIMe
         }
       } else if (message.role === "assistant" && current) {
         const text = copyMessageText(message, withJson);
-        if (text) current[provider].push(text);
+        if (text) current[provider].push(formatMessage(message, provider === "openrouter" ? "MAX · OpenRouter" : "MAX · Gemini", withJson, responseTimes[provider]?.[message.id]));
       }
     }
   }
   return [...groups.values()].sort((a, b) => a.sentAt - b.sentAt || a.order - b.order).flatMap((group) => [
     ...(group.question ? [`Ty: ${group.question}`] : []),
-    ...group.openrouter.map((text) => `MAX · OpenRouter: ${text}`),
-    ...group.google.map((text) => `MAX · Gemini: ${text}`),
+    ...group.openrouter,
+    ...group.google,
   ]).join(`\n${"-".repeat(63)}\n`);
 }
 

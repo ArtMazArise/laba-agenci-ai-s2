@@ -192,6 +192,7 @@ Nie obiecuj na podstawie przykładu dostępności spotkań grupowych i nie wylic
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
             const result = attempt === 0 ? firstResult : generate(false);
+            const usedTools = new Set<string>();
             const sourceChunks: { chunk: Extract<UIMessageChunk, { type: "source-url" }>; fetchedAt: string }[] = [];
             const sources = (async () => {
               try {
@@ -213,6 +214,16 @@ Nie obiecuj na podstawie przykładu dostępności spotkań grupowych i nie wylic
             try {
               for await (const part of result.fullStream) {
                 if (part.type === "error") streamError = part.error;
+                if (part.type === "tool-result") usedTools.add(part.toolName);
+                // Natywne wyszukiwanie nie zawsze emituje tool-result.
+                if (attempt === 0 && part.type === "source" && part.sourceType === "url") usedTools.add(provider === "google" ? "google_search" : "web_search");
+                if (attempt === 0 && provider === "google" && part.type === "finish-step") {
+                  const metadata = part.providerMetadata?.google;
+                  if (metadata && typeof metadata === "object") {
+                    const items = [metadata.groundingMetadata, ...(Array.isArray(metadata.groundingMetadataPerRequest) ? metadata.groundingMetadataPerRequest : [])];
+                    if (items.some((item) => item && typeof item === "object" && "webSearchQueries" in item && Array.isArray(item.webSearchQueries) && item.webSearchQueries.length > 0)) usedTools.add("google_search");
+                  }
+                }
               }
               reason = await Promise.resolve(result.finishReason).catch((error) => { throw streamError ?? error; });
             } finally { await Promise.all([previews, sources]); }
@@ -243,6 +254,7 @@ Nie obiecuj na podstawie przykładu dostępności spotkań grupowych i nie wylic
               writer.write(chunk);
               writer.write({ type: "data-source-fetched", id: chunk.sourceId, data: { sourceId: chunk.sourceId, fetchedAt } });
             }
+            if (usedTools.size && getSetting("CHAT_SHOW_USED_TOOLS")?.trim().toLowerCase() !== "false") writer.write({ type: "data-used-tools", data: [...usedTools] });
             writer.write({ type: "finish", finishReason: "stop" });
             return;
           } catch (error) {

@@ -10,7 +10,7 @@ import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -121,6 +121,11 @@ function PanelHeading({ title, modelName, chat, responseTime, children }: {
   </div>;
 }
 
+function UsedTools({ message }: { message: UIMessage }) {
+  const tools = messageUsedTools(message);
+  return tools.length ? <small className="message-metadata">użyto: {tools.join(", ")}</small> : null;
+}
+
 function Sources({ message }: { message: UIMessage }) {
   if (messageHasSearchFallback(message)) return <p className="message-metadata">Bez wyszukiwania — limit API. Bieżące dane nie zostały zweryfikowane w internecie.</p>;
   const sources = messageSources(message);
@@ -174,7 +179,7 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
       <button type="submit" disabled={busy || !activeCount || !clientMessage.trim()}>{busy ? "Analizowanie…" : "Analizuj wiadomość"}</button>
     </form>
     <div className="analysis-copy-controls">
-      <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages)} label="Kopiuj całość" />
+      <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes })} label="Kopiuj całość" />
     </div>
     {!activeCount && <p className="chat-feedback">Włącz przynajmniej jeden model.</p>}
     <div className="analysis-results" data-count={activeCount}>
@@ -185,7 +190,7 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
         const previewText = chat.isBusy && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         return <article className="chat-panel analysis-panel" key={provider} aria-label={`Analiza: ${title}`}>
           <PanelHeading title={title} modelName={modelNames[provider]} chat={chat} responseTime={reply ? chat.responseTimes[reply.id] : undefined}>
-            <CopyButton text={result && reply ? formatMessage(reply, title) : ""} />
+            <CopyButton text={result && reply ? formatMessage(reply, title, false, chat.responseTimes[reply.id]) : ""} />
             <button type="button" className="copy-button" disabled={chat.isBusy || !chat.messages.length} onClick={chat.clearConversation}>Wyczyść</button>
           </PanelHeading>
           <div className="analysis-result-body" aria-live="polite" aria-busy={chat.isBusy}>
@@ -197,6 +202,7 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
               </dl>
               <h3>Szkic odpowiedzi</h3><p className="analysis-draft">{result.draft}</p>
               <p className="message-metadata">To nadal szkic, także gdy sprawdzenie nie jest wymagane.</p>
+              {reply && <UsedTools message={reply} />}
               {reply && <Sources message={reply} />}
             </> : chat.isBusy ? <><p>MAX myśli… sprawdza wiadomość…</p><p className="analysis-draft">{previewText}</p><small>Wynik w trakcie sprawdzania.</small></>
               : !chat.error && <p className="message-metadata">Tutaj pojawi się wynik analizy.</p>}
@@ -233,7 +239,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
 
   return <div className="chat-panel">
     <PanelHeading title={title} modelName={modelName} chat={chat}>
-      <CopyButton text={formatConversation(chat.messages, title)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button>
+      <CopyButton text={formatConversation(chat.messages, title, false, chat.responseTimes)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true, chat.responseTimes)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button>
     </PanelHeading>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
       {chat.messages.map((item) => {
@@ -243,7 +249,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
         const previewText = chat.isBusy && item === chat.messages.at(-1) && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         const presentation = item.role === "assistant" && !result ? assistantPresentation(messageText(item)) : { text: messageText(item), category: undefined, review: undefined };
         return <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
-          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}{item.role === "assistant" && <ResponseTime milliseconds={chat.responseTimes[item.id]} />}</span><div className="message-copy-controls"><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title) : ""} /><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, true) : ""} label="Kopiuj z JSON" /></div></div>
+          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}{item.role === "assistant" && <ResponseTime milliseconds={chat.responseTimes[item.id]} />}</span><div className="message-copy-controls"><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, false, chat.responseTimes[item.id]) : ""} /><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, true, chat.responseTimes[item.id]) : ""} label="Kopiuj z JSON" /></div></div>
           {isAnalysis && <small className="message-metadata">Szkic odpowiedzi</small>}
           <span>{presentation.text || previewText}</span>
           {!chat.isBusy && !result && preview && <small className="message-metadata">Odpowiedź nie została zatwierdzona.</small>}
@@ -252,6 +258,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
             ? `Kategoria: ${result.category} · Priorytet: ${result.priority} · Sprawdzenie: ${result.needs_review ? "wymagane" : "niewymagane"} — nadal szkic`
             : `${result.category} · ${result.priority} · ${String(result.needs_review)}`}</small>
             : (presentation.category || presentation.review) && <small className="message-metadata">{[presentation.category, presentation.review].filter(Boolean).join(" · ")}</small>}
+          {item.role === "assistant" && <UsedTools message={item} />}
           {item.role === "assistant" && clientMessageText(item).trim() && <Sources message={item} />}
           {result && <div className="message-json message-metadata"><details><summary>JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details><CopyButton text={JSON.stringify(result, null, 2)} /></div>}
         </div></div>;
@@ -452,8 +459,8 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
           <button type="submit" disabled={sharedDisabled || !sharedDraft.trim()}>{sendingShared ? "Czekaj…" : mode === "analysis" ? "Analizuj" : "Wyślij"}</button>
         </form>
         <div className="copy-clear-controls">
-          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages)} label="Kopiuj całość" />
-          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, true)} label="Kopiuj całość z JSON" />
+          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes })} label="Kopiuj całość" />
+          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, true, { openrouter: openrouter.responseTimes, google: google.responseTimes })} label="Kopiuj całość z JSON" />
           <button type="button" className="copy-button clear-chat-button" disabled={busy || dueling || sendingShared || (!openrouter.messages.length && !google.messages.length && !openrouter.error && !google.error && !turns && !duelError)} onClick={clearAllConversations}>Wyczyść całość</button>
         </div>
         {testQuestions.invalid && <p className="questions-error" role="alert">Nie można odczytać listy z config/test-questions.json. Sprawdź plik i format JSON. Nadal możesz wpisać własną wiadomość.</p>}
