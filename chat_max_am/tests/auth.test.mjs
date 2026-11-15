@@ -1,3 +1,4 @@
+import { loadTimingModule } from "./timing-helper.mjs";
 import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
@@ -17,7 +18,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   const env = { CHAT_PASSWORD: password, CHAT_MAX_ATTEMPTS: "3", SESSION_SECRET: secret, AUTH_STATE_DIR: directory, NODE_ENV: "test", ...overrides };
   let now = Date.now();
   class Clock extends Date { static now() { return now; } }
-  const context = vm.createContext({ process: { env, cwd: () => directory }, Buffer, Response, Request, URL, Date: Clock, AbortSignal, setTimeout, clearTimeout });
+  const context = vm.createContext({ performance, process: { env, cwd: () => directory }, Buffer, Response, Request, URL, Date: Clock, AbortSignal, setTimeout, clearTimeout });
   const modules = new Map();
   let modelCalls = 0;
   const jokeCalls = [];
@@ -44,6 +45,11 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
       await settings.evaluate();
       modules.set(name, settings);
       return settings;
+    }
+    if (name === "@/lib/chat-timing") {
+      const timing = await loadTimingModule(context);
+      await timing.evaluate();
+      return timing;
     }
     if (name === "@/lib/public-tools") {
       const publicTools = await loadPublicToolsModule(context);

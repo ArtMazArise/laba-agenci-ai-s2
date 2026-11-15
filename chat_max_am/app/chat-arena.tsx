@@ -11,7 +11,7 @@ import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools, searchFallbackNotice } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools, searchFallbackNotice, messageTiming, messageRequest, sendWithWeatherLocation, completeWeatherQuestion } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -143,6 +143,14 @@ function Sources({ message }: { message: UIMessage }) {
   </>;
 }
 
+function TimingDetails({ message }: { message: UIMessage }) {
+  const timing = messageTiming(message);
+  const request = messageRequest(message);
+  if (!timing && !request) return null;
+  const text = JSON.stringify({ ...(request ? { request } : {}), ...(timing ? { timing } : {}) }, null, 2);
+  return <div className="message-json message-metadata"><details><summary>Żądanie i czasy (JSON)</summary><p>Żądanie zawiera wiadomość i argumenty narzędzi, bez nagłówków, kluczy i instrukcji serwerowej. input to argumenty modelu, effectiveInput to argumenty użyte przez aplikację. </p><p>Czasy serwera w ms. Etapy modelu obejmują sieć, kolejkę i generowanie. Natywne wyszukiwanie jest wliczone w czas modelu; toolMs mierzy wykonanie naszych funkcji. Suma czasów równoległych narzędzi może przekraczać toolMs.</p><pre>{text}</pre></details><CopyButton text={text} /></div>;
+}
+
 function ResponseTime({ milliseconds }: { milliseconds?: number }) {
   const label = formatResponseTime(milliseconds);
   return label ? <small className="response-time" title="Czas od wysłania zapytania do odebrania pełnej odpowiedzi, wraz z walidacją">· {label}</small> : null;
@@ -222,7 +230,7 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
   </section>;
 }
 
-function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel }: {
+function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel, onSendText }: {
   chat: MaxChat;
   title: string;
   modelName?: string;
@@ -230,6 +238,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
   dueling: boolean;
   canDuel: boolean;
   onStartDuel: (text: string) => boolean;
+  onSendText: (text: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState("");
   const conversationRef = useRef<HTMLElement>(null);
@@ -241,7 +250,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft.trim() || chat.isBusy || dueling) return;
-    void chat.sendText(draft.trim());
+    void onSendText(draft.trim());
     setDraft("");
   }
 
@@ -269,6 +278,7 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
           {item.role === "assistant" && <UsedTools message={item} />}
           {item.role === "assistant" && clientMessageText(item).trim() && <Sources message={item} />}
           {result && <div className="message-json message-metadata"><details><summary>JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details><CopyButton text={JSON.stringify(result, null, 2)} /></div>}
+          {item.role === "assistant" && <TimingDetails message={item} />}
         </div></div>;
       })}
     </section>
@@ -339,6 +349,8 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
   const [location, setLocation] = useState<WeatherLocation>();
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState("");
+  const [pendingWeather, setPendingWeather] = useState<{ question: string; targets: EnabledProviders } | null>(null);
+  const [customWeatherCity, setCustomWeatherCity] = useState("");
   const openrouter = useMaxChat("openrouter", "chat", "openrouter", location);
   const google = useMaxChat("google", "chat", "google", location);
   function requestLocation() {
@@ -350,7 +362,7 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
       setLocation({ latitude: Math.round(coords.latitude * 1000) / 1000, longitude: Math.round(coords.longitude * 1000) / 1000 });
       setLocating(false);
     }, (error) => {
-      setLocationError(error.code === 1 ? "Brak zgody na lokalizację. Możesz wpisać miasto w wiadomości." : error.code === 3 ? "Przekroczono czas pobierania lokalizacji. Spróbuj ponownie lub wpisz miasto." : "Nie udało się ustalić lokalizacji. Możesz wpisać miasto w wiadomości.");
+      setLocationError(error.code === 1 ? "Przeglądarka lub system blokuje lokalizację. Kliknij ikonę po lewej stronie adresu strony i sprawdź uprawnienie „Lokalizacja”. Jeśli nadal jest blokada, sprawdź ustawienia lokalizacji systemu. Możesz też wpisać miasto w wiadomości." : error.code === 3 ? "Przekroczono czas pobierania lokalizacji. Spróbuj ponownie lub wpisz miasto." : "Nie udało się ustalić lokalizacji. Możesz wpisać miasto w wiadomości.");
       setLocating(false);
     }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
   }
@@ -375,16 +387,14 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
   const busy = openrouter.isBusy || google.isBusy;
   const activeCount = Number(active.openrouter) + Number(active.google);
   const sharedDisabled = busy || dueling || sendingShared || activeCount === 0;
-  const weatherRequested = [openrouter.messages, google.messages].some((messages) => {
-    const question = [...messages].reverse().find((message) => message.role === "user");
-    const text = question ? messageText(question).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") : "";
-    return /pogod|prognoz|temperatur|bedzie padac|czy pada|opad|deszcz|snieg/.test(text);
-  });
+  const weatherRequested = Boolean(pendingWeather);
 
   function clearAllConversations() {
     if (busy || duelController.current || sharedSending.current) return;
     openrouter.clearConversation();
     google.clearConversation();
+    setPendingWeather(null);
+    setCustomWeatherCity("");
     setTurns(0);
     setDuelError("");
     setBatchQuestion(false);
@@ -393,20 +403,57 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
 
   async function sendShared(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!sharedDraft.trim() || sharedDisabled || sharedSending.current) return;
+    await sendSharedText(sharedDraft);
+  }
+
+  async function submitToChats(text: string, targets: EnabledProviders) {
+    if (sharedDisabled || sharedSending.current) return;
+    const selected = { openrouter: targets.openrouter && active.openrouter, google: targets.google && active.google };
+    if (!selected.openrouter && !selected.google) return;
     sharedSending.current = true;
     setSendingShared(true);
-    const text = sharedDraft.trim();
     const sharedTurnId = crypto.randomUUID();
     const sentAt = Date.now();
+    setPendingWeather(null);
     setSharedDraft("");
     try {
-      await broadcastMessage(text, active, {
+      await broadcastMessage(text, selected, {
         openrouter: (value) => openrouter.sendText(value, sharedTurnId, sentAt),
         google: (value) => google.sendText(value, sharedTurnId, sentAt),
       });
     } finally { sharedSending.current = false; setSendingShared(false); }
   }
+
+  async function sendSharedText(value: string) {
+    if (!value.trim() || sharedDisabled || sharedSending.current) return;
+    if (pendingWeather && /^(?:Radom|Warszawa|Zakopane|Gdańsk)$/i.test(value.trim())) { await chooseWeatherCity(value); return; }
+    await sendWithWeatherLocation(value, Boolean(location), (question) => {
+      setPendingWeather({ question, targets: { ...active } });
+      setSharedDraft("");
+    }, (question) => submitToChats(question, active));
+  }
+
+  async function sendPanelText(provider: Provider, value: string) {
+    if ((provider === "openrouter" ? openrouter : google).isBusy || dueling || sharedSending.current) return;
+    await sendWithWeatherLocation(value, Boolean(location), (question) => {
+      setPendingWeather({ question, targets: { openrouter: provider === "openrouter", google: provider === "google" } });
+    }, async (question) => {
+      setPendingWeather(null);
+      await (provider === "openrouter" ? openrouter : google).sendText(question);
+    });
+  }
+
+  async function chooseWeatherCity(city: string) {
+    if (!pendingWeather || !city.trim() || sharedDisabled || analysisBusy) return;
+    const selected = { openrouter: pendingWeather.targets.openrouter && active.openrouter, google: pendingWeather.targets.google && active.google };
+    if (!selected.openrouter && !selected.google) return;
+    await submitToChats(completeWeatherQuestion(pendingWeather.question, city), selected);
+    setCustomWeatherCity("");
+  }
+
+  useEffect(() => {
+    if (location && pendingWeather && !busy && !dueling && !sharedSending.current) void submitToChats(pendingWeather.question, pendingWeather.targets);
+  }, [location]);
 
   useEffect(() => () => {
     duelController.current?.abort();
@@ -512,11 +559,22 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
         <h1>Jestem <span>MAX</span>, od AM</h1>
         <p className="subtitle">Twoja krypta. Wybierz jednego MAX-a lub zaproś obu do pojedynku.</p>
       </header>
-      {weatherRequested && <div className="location-controls" data-ready={Boolean(location)}>
-        {!location && <span className="location-hint"><strong>Pogoda w Twojej okolicy?</strong> Kliknij „Moja lokalizacja” i zezwól przeglądarce na jej udostępnienie. Możesz też wpisać miasto w wiadomości.</span>}
+      {!weatherRequested && location && <div className="location-controls"><span>Lokalizacja do pogody ustawiona</span><button type="button" className="copy-button" disabled={busy || analysisBusy || dueling} onClick={() => { setLocation(undefined); setLocationError(""); }}>Usuń lokalizację</button></div>}
+      {mode === "chat" && weatherRequested && <div className="location-controls" data-ready={Boolean(location)}>
+        {!location && <span className="location-hint"><strong>Wybierz miejscowość do prognozy</strong> Kliknij miasto poniżej, wpisz własne lub użyj „Moja lokalizacja”.</span>}
+        {pendingWeather && <p className="pending-weather-question" role="status">{pendingWeather.question}<small>Wybierz miejscowość — pytanie nie zostało jeszcze wysłane do AI.</small><button type="button" className="copy-button" onClick={() => setPendingWeather(null)}>Anuluj wybór</button></p>}
         <button type="button" className="secondary-button location-button" onClick={requestLocation} disabled={locating || busy || analysisBusy || dueling}>{locating ? "Ustalam lokalizację…" : location ? "📍 Zmień lokalizację" : "📍 Moja lokalizacja"}</button>
         {location && <><span role="status">Lokalizacja do pogody ustawiona</span><button type="button" className="copy-button" disabled={busy || analysisBusy || dueling} onClick={() => { setLocation(undefined); setLocationError(""); }}>Usuń lokalizację</button></>}
         {locationError && <span role="alert">{locationError}</span>}
+        <div className="weather-city-replies" aria-label="Szybkie odpowiedzi z miejscowością">
+          <span>Wyślij miejscowość do zaznaczonych czatów:</span>
+          {["Radom", "Warszawa", "Zakopane", "Gdańsk"].map((city) => <button key={city} type="button" className="secondary-button" disabled={sharedDisabled || analysisBusy} onClick={() => void chooseWeatherCity(city)}>{city}</button>)}
+        </div>
+        <form className="weather-custom-city" onSubmit={(event) => { event.preventDefault(); void chooseWeatherCity(customWeatherCity); }}>
+          <label className="sr-only" htmlFor="weather-custom-city">Inna miejscowość</label>
+          <input id="weather-custom-city" value={customWeatherCity} onChange={(event) => setCustomWeatherCity(event.target.value)} placeholder="Inna miejscowość…" maxLength={100} disabled={sharedDisabled || analysisBusy} />
+          <button type="submit" className="secondary-button" disabled={sharedDisabled || analysisBusy || !customWeatherCity.trim()}>Sprawdź pogodę</button>
+        </form>
       </div>}
       <div hidden={mode !== "analysis"}>
         <AnalysisWorkspace active={active} enabled={enabled} modelNames={modelNames} setActive={setActive} onBusyChange={setAnalysisBusy} location={location} />
@@ -542,8 +600,8 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
         {testQuestions.invalid && <p className="questions-error" role="alert">Nie można odczytać listy z config/test-questions.json. Sprawdź plik i format JSON. Nadal możesz wpisać własną wiadomość.</p>}
       </div>
       <div className="chat-grid" data-count={activeCount} style={{ "--chat-height": `${chatHeight}px` } as CSSProperties}>
-        {active.openrouter && <ChatPanel chat={openrouter} title="MAX · OpenRouter" modelName={modelNames.openrouter} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
-        {active.google && <ChatPanel chat={google} title="MAX · Gemini" modelName={modelNames.google} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
+        {active.openrouter && <ChatPanel onSendText={(text) => sendPanelText("openrouter", text)} chat={openrouter} title="MAX · OpenRouter" modelName={modelNames.openrouter} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
+        {active.google && <ChatPanel onSendText={(text) => sendPanelText("google", text)} chat={google} title="MAX · Gemini" modelName={modelNames.google} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
       </div>
       <div className="duel-controls">
         <p className="duel-status" role="status">{batchQuestion ? `Ukończono ${Math.floor(turns / 2)} rund. Czy chcesz kontynuować przez kolejne ${roundsPerBatch} rund?` : dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : `Wpisz temat i kliknij Pojedynek! Automatyczna pauza co ${roundsPerBatch} rund.`}</p>

@@ -218,3 +218,13 @@ input:focus-visible, button:focus-visible { outline: 2px solid #bdff59; outline-
 .location-hint { flex: 1 1 340px; line-height: 1.6; color: #d1dfc1; }
 .location-hint strong { display: block; color: #bdff59; font-size: 14px; }
 .location-controls .location-button { padding: 10px 16px; font-size: 14px; }
+
+.weather-city-replies { display: flex; flex: 1 0 100%; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 6px; }
+.weather-city-replies > span { flex-basis: 100%; }
+.weather-city-replies button { padding: 8px 14px; font-size: 13px; }
+
+.pending-weather-question { flex-basis: 100%; margin: 0; color: #e0e9d8; white-space: pre-wrap; }
+.pending-weather-question small { display: block; margin-top: 4px; color: #adbd9b; }
+.weather-custom-city { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 8px; margin: 0; padding: 6px 0 0; border: 0; background: transparent; }
+.weather-custom-city input { flex: 1 1 180px; min-width: 0; padding: 10px 12px; }
+.weather-custom-city button { padding: 10px 14px; font-size: 13px; }

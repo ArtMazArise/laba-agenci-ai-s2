@@ -42,7 +42,7 @@ test('NBP: tylko potrzebne pola, data tabeli osobno od pobrania', async () => {
   assert.equal(calls[0], 'https://api.nbp.pl/api/exchangerates/rates/a/eur/?format=json');
 });
 
-test('NBP: tabela B po 404, brak daty bez podmiany na ostatni kurs', async () => {
+test('NBP: tabela B po 404, brak danych po ograniczonym szukaniu wstecz', async () => {
   const calls = [];
   const result = await kursWalutyNBP({ currency: 'ZAR', date: '' }, { now, fetcher: async (url) => {
     calls.push(url);
@@ -169,8 +169,51 @@ test('NBP: jedno wykonanie porównania pobiera oba kursy i oblicza zmianę', asy
 });
 
 test('NBP: brak jednego kursu nie tworzy pozornego porównania', async () => {
-  const result = await module.namespace.porownajKursWalutyNBP({ currency: 'EUR', date: '2026-11-15' }, { now, fetcher: async (url) => url.includes('/2026-11-15/') ? reply({}, 404) : reply({ code: 'EUR', rates: [{ mid: 4.5, no: 'test/A', effectiveDate: '2026-11-13' }] }) });
+  const result = await module.namespace.porownajKursWalutyNBP({ currency: 'EUR', date: '2026-11-15' }, { now, fetcher: async (url) => url.includes('2026-11-15/') ? reply({}, 404) : reply({ code: 'EUR', rates: [{ mid: 4.5, no: 'test/A', effectiveDate: '2026-11-13' }] }) });
   assert.equal(result.ok, false);
   assert.equal(result.changePLN, undefined);
   assert.match(result.message, /Nie można obliczyć zmiany/);
+});
+
+
+test('NBP: po braku tabeli bierze najbliższą wcześniejszą i ujawnia obie daty', async () => {
+  const calls = [];
+  const result = await kursWalutyNBP({ currency: 'EUR', date: '2026-11-08' }, { now, fetcher: async (url) => {
+    calls.push(url);
+    if (!url.includes('/2026-10-25/2026-11-08/')) return reply({}, 404);
+    return reply({ code: 'EUR', rates: [{ mid: 4, no: 'older/A', effectiveDate: '2026-11-05' }, { mid: 4.1, no: 'nearest/A', effectiveDate: '2026-11-06' }] });
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(result.requestedDate, '2026-11-08');
+  assert.equal(result.effectiveDate, '2026-11-06');
+  assert.equal(result.usedEarlierDate, true);
+  assert.equal(result.rate, 4.1);
+  assert.equal(calls.length, 3);
+});
+
+test('poprzedni piątek to dzień przed dziś, także gdy dziś jest piątek', () => {
+  const compare = module.namespace.currencyComparisonRequest;
+  assert.equal(compare('Kurs EUR w poprzedni piątek, porównaj', now()).date, '2026-11-13');
+  assert.equal(compare('Kurs EUR w poprzedni piątek, porównaj', new Date('2026-11-13T12:00:00Z')).date, '2026-11-06');
+});
+
+test('NBP nie cofa daty po awarii HTTP 503 ani nie przyjmuje tabeli z przyszłości', async () => {
+  let calls = 0;
+  const unavailable = await kursWalutyNBP({ currency: 'EUR', date: '2026-11-08' }, { now, fetcher: async () => { calls++; return reply({}, 503); } });
+  assert.equal(unavailable.ok, false);
+  assert.equal(calls, 1);
+  const invalid = await kursWalutyNBP({ currency: 'EUR', date: '2026-11-08' }, { now, fetcher: async (url) => url.includes('/2026-10-25/') ? reply({ code: 'EUR', rates: [{ mid: 4, no: 'future/A', effectiveDate: '2026-11-09' }] }) : reply({}, 404) });
+  assert.equal(invalid.ok, false);
+});
+
+
+test('opis porównania pokazuje oba kursy, dokładne grosze i rzeczywiste daty', () => {
+  const format = module.namespace.formatCurrencyComparison;
+  const result = format({ currency: 'EUR', historical: { rate: 4.3925, effectiveDate: '2026-11-06', tableNumber: '217/A', requestedDate: '2026-11-08' }, current: { rate: 4.407, effectiveDate: '2026-11-13', tableNumber: '221/A' } });
+  for (const expected of ['4,3925 zł', '4,4070 zł', '+0,0145 zł', '+1,45 gr', '+0,33%', '2026-11-06', '2026-11-13', '2026-11-08']) assert.ok(result.includes(expected), expected);
+  const same = format({ currency: 'EUR', historical: { rate: 4.407, effectiveDate: '2026-11-13', tableNumber: '221/A', requestedDate: '2026-11-13' }, current: { rate: 4.407, effectiveDate: '2026-11-13', tableNumber: '221/A' } });
+  assert.match(same, /0,0000 zł/);
+  assert.match(same, /tej samej daty publikacji/);
+  const fall = format({ currency: 'EUR', historical: { rate: 4.5, effectiveDate: '2026-11-06', tableNumber: '217/A', requestedDate: '2026-11-06' }, current: { rate: 4.4, effectiveDate: '2026-11-13', tableNumber: '221/A' } });
+  assert.match(fall, /-0,1000 zł/);
 });

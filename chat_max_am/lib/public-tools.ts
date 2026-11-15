@@ -35,19 +35,27 @@ export async function kursWalutyNBP(input: CurrencyInput, deps: Dependencies = {
   if (!/^[A-Z]{3}$/.test(currency)) return failed("Podaj trzyliterowy kod waluty, np. EUR, USD lub CHF. Jeśli nie podano waluty, zapytaj klienta, o jaką chodzi.", deps);
   if (date && !validDate(date)) return failed("Data kursu musi mieć format RRRR-MM-DD. Pusty tekst oznacza ostatni opublikowany kurs.", deps);
   try {
-    for (const table of ["a", "b"]) {
-      const sourceUrl = `https://api.nbp.pl/api/exchangerates/rates/${table}/${currency.toLowerCase()}/${date ? `${date}/` : ""}?format=json`;
-      const response = await requestJson(sourceUrl, deps);
-      if (response.status === 404) continue;
-      if (!response.ok) return failed(`NBP jest niedostępny (HTTP ${response.status}). Nie podawaj kursu z pamięci. Spróbuj później.`, deps);
-      const data = object(response.data);
-      const rate = object(Array.isArray(data.rates) ? data.rates[0] : undefined);
-      if (data.code !== currency || !finite(rate.mid) || rate.mid <= 0 || typeof rate.effectiveDate !== "string" || !validDate(rate.effectiveDate) || typeof rate.no !== "string" || (date && rate.effectiveDate !== date)) {
-        return failed("NBP zwrócił nieprawidłowe dane. Kurs nie został potwierdzony.", deps);
+    const start = date ? new Date(`${date}T00:00:00Z`) : undefined;
+    start?.setUTCDate(start.getUTCDate() - 14);
+    const earliest = start?.toISOString().slice(0, 10);
+    // Najpierw dokładna data w A/B. Po 404 szukamy ostatniej wcześniejszej publikacji.
+    for (const fallback of date ? [false, true] : [false]) {
+      for (const table of ["a", "b"]) {
+        const period = fallback ? `${earliest}/${date}/` : date ? `${date}/` : "";
+        const sourceUrl = `https://api.nbp.pl/api/exchangerates/rates/${table}/${currency.toLowerCase()}/${period}?format=json`;
+        const response = await requestJson(sourceUrl, deps);
+        if (response.status === 404) continue;
+        if (!response.ok) return failed(`NBP jest niedostępny (HTTP ${response.status}). Nie podawaj kursu z pamięci. Spróbuj później.`, deps);
+        const data = object(response.data);
+        const rates = Array.isArray(data.rates) ? data.rates.map(object) : [];
+        if (data.code !== currency || !rates.length || rates.some((rate) => !finite(rate.mid) || rate.mid <= 0 || typeof rate.effectiveDate !== "string" || !validDate(rate.effectiveDate) || typeof rate.no !== "string" || (date && (fallback ? rate.effectiveDate > date || rate.effectiveDate < earliest! : rate.effectiveDate !== date)))) {
+          return failed("NBP zwrócił nieprawidłowe dane. Kurs nie został potwierdzony.", deps);
+        }
+        const rate = rates.sort((left, right) => String(right.effectiveDate).localeCompare(String(left.effectiveDate)))[0];
+        return { ok: true as const, currency, quoteCurrency: "PLN", rateType: "średni kurs NBP za 1 jednostkę waluty", rate: rate.mid as number, effectiveDate: rate.effectiveDate as string, tableNumber: rate.no as string, requestedDate: date || null, usedEarlierDate: Boolean(date && rate.effectiveDate !== date), sourceUrl, fetchedAt: instant(deps).toISOString() };
       }
-      return { ok: true as const, currency, quoteCurrency: "PLN", rateType: "średni kurs NBP za 1 jednostkę waluty", rate: rate.mid, effectiveDate: rate.effectiveDate, tableNumber: rate.no, sourceUrl, fetchedAt: instant(deps).toISOString() };
     }
-    return failed(`NBP nie opublikował kursu ${currency}${date ? ` na ${date}` : " w tabelach A/B"}. Nie zastępuj go inną datą lub wymyśloną wartością.`, deps);
+    return failed(`NBP nie opublikował kursu ${currency}${date ? ` na ${date} ani w ciągu 14 wcześniejszych dni` : " w tabelach A/B"}. Nie wymyślaj wartości.`, deps);
   } catch { return failed("Nie udało się pobrać kursu z NBP (brak połączenia lub przekroczony czas). Spróbuj później; nie podawaj kursu z pamięci.", deps); }
 }
 
@@ -64,6 +72,10 @@ export function currencyComparisonRequest(text: string, now = new Date()): { dat
     if (Number(days) > 3650) return {};
     date.setUTCDate(date.getUTCDate() - Number(days));
   } else if (/tydzien temu|sprzed tygodnia/.test(plain)) date.setUTCDate(date.getUTCDate() - 7);
+  else if (/poprzedni piatek|ostatni piatek/.test(plain)) {
+    const daysBack = (date.getUTCDay() + 2) % 7 || 7;
+    date.setUTCDate(date.getUTCDate() - daysBack);
+  }
   else if (/rok temu|sprzed roku/.test(plain)) {
     const year = date.getUTCFullYear() - 1;
     const month = date.getUTCMonth();
@@ -73,6 +85,22 @@ export function currencyComparisonRequest(text: string, now = new Date()): { dat
   return { date: date.toISOString().slice(0, 10) };
 }
 
+export function formatCurrencyComparison(value: { currency: string; historical: { rate: number; effectiveDate: string; tableNumber: string; requestedDate: string | null }; current: { rate: number; effectiveDate: string; tableNumber: string } }) {
+  const { currency, historical, current } = value;
+  const change = Number((current.rate - historical.rate).toFixed(4));
+  const percent = change / historical.rate * 100;
+  const format = (number: number, digits: number) => number.toFixed(digits).replace(".", ",");
+  const signed = (number: number, digits: number) => `${number > 0 ? "+" : ""}${format(number, digits)}`;
+  const lines = [
+    `Wskazany kurs ${currency}: ${format(historical.rate, 4)} zł — ${historical.effectiveDate}.`,
+    `Bieżący kurs ${currency}: ${format(current.rate, 4)} zł — ${current.effectiveDate} (ostatni opublikowany kurs).`,
+    `Zmiana: ${signed(change, 4)} zł (${signed(change * 100, 2)} gr), czyli ${signed(percent, 2)}%.`,
+  ];
+  if (historical.requestedDate && historical.requestedDate !== historical.effectiveDate) lines.push(`Dla żądanej daty ${historical.requestedDate} nie było tabeli — użyto ostatniej wcześniejszej publikacji z ${historical.effectiveDate}.`);
+  if (historical.effectiveDate === current.effectiveDate) lines.push("Oba kursy dotyczą tej samej daty publikacji, dlatego zmiana wynosi zero.");
+  return lines.join("\n");
+}
+
 export async function porownajKursWalutyNBP(input: CurrencyInput, deps: Dependencies = {}) {
   if (!input.date.trim()) return failed("Do porównania kursu z bieżącym potrzebna jest data historyczna. Zapytaj o datę lub okres; nie wymyślaj drugiego kursu.", deps);
   const [historical, current] = await Promise.all([kursWalutyNBP(input, deps), kursWalutyNBP({ currency: input.currency, date: "" }, deps)]);
@@ -80,11 +108,12 @@ export async function porownajKursWalutyNBP(input: CurrencyInput, deps: Dependen
   return {
     ok: true as const, currency: historical.currency, quoteCurrency: "PLN",
     historical, current,
+    comparisonDraft: formatCurrencyComparison({ currency: historical.currency, historical, current }),
     changePLN: Number((current.rate - historical.rate).toFixed(4)),
     changePercent: Number(((current.rate - historical.rate) / historical.rate * 100).toFixed(6)),
     calculation: "Zmiana = bieżący minus historyczny; procent = zmiana / historyczny × 100. Daty dotyczą publikacji tabel, nie pobrania.",
     fetchedAt: instant(deps).toISOString(),
-    sources: [historical, current].map((rate) => ({ url: rate.sourceUrl, title: `NBP — ${rate.currency}, tabela ${rate.tableNumber}, ${rate.effectiveDate}`, fetchedAt: rate.fetchedAt })),
+    sources: [historical, current].map((rate) => ({ url: rate.sourceUrl, title: `NBP — ${rate.currency}, ${rate.effectiveDate}`, fetchedAt: rate.fetchedAt })),
   };
 }
 
@@ -146,8 +175,13 @@ export function requestedPublicTools(text: string): PublicToolName[] {
   return names;
 }
 
-export function createPublicTools(signal: AbortSignal, location?: WeatherLocation, comparison?: { date?: string }) {
-  const currencySchema = jsonSchema<CurrencyInput>({ type: "object", properties: { currency: { type: "string", description: "Kod waluty ISO, np. EUR. Pusty tekst, jeśli klient nie podał waluty." }, date: { type: "string", description: "RRRR-MM-DD dla konkretnej daty lub pusty tekst dla ostatniego opublikowanego kursu. Nie wymyślaj daty publikacji dzisiejszej tabeli." } }, required: ["currency", "date"], additionalProperties: false }, { validate: (v) => {
+export function explicitWeatherCity(text: string): string | undefined {
+  const city = [...text.matchAll(/^\s*(?:Miejscowość|Miasto)\s*:\s*([^\r\n]+)$/gim)].at(-1)?.[1].trim();
+  return city && city.length <= 100 ? city : undefined;
+}
+
+export function createPublicTools(signal: AbortSignal, location?: WeatherLocation, comparison?: { date?: string }, weatherCity?: string) {
+  const currencySchema = jsonSchema<CurrencyInput>({ type: "object", properties: { currency: { type: "string", description: "Kod waluty ISO, np. EUR. Pusty tekst, jeśli klient nie podał waluty." }, date: { type: "string", description: "RRRR-MM-DD dla konkretnej daty lub pusty tekst dla ostatniego opublikowanego kursu. Przy braku tabeli we wskazanym dniu narzędzie pobierze najbliższą wcześniejszą, maksymalnie 14 dni wstecz. Podaj rzeczywistą datę publikacji." } }, required: ["currency", "date"], additionalProperties: false }, { validate: (v) => {
     const input = object(v); return Object.keys(input).length === 2 && typeof input.currency === "string" && typeof input.date === "string" ? { success: true, value: input as CurrencyInput } : { success: false, error: new Error("Nieprawidłowe parametry NBP.") };
   } });
   const weatherSchema = jsonSchema<WeatherInput>({ type: "object", properties: { city: { type: "string", maxLength: 100, description: "Miejscowość z wiadomości lub odpowiedzi na pytanie o lokalizację; pusty tekst, jeśli jej nie podano." }, startOffsetDays: { type: "integer", description: "Dziś: 0, jutro: 1, za tydzień: 7. Poza zakresem 0–15 narzędzie zwróci komunikat." }, days: { type: "integer", minimum: 1, maximum: 16, description: "Liczba dni prognozy. Trzy najbliższe dni: 3, od dziś (offset 0)." } }, required: ["city", "startOffsetDays", "days"], additionalProperties: false }, { validate: (v) => {
@@ -156,7 +190,7 @@ export function createPublicTools(signal: AbortSignal, location?: WeatherLocatio
   const emptySchema = jsonSchema<Record<string, never>>({ type: "object", properties: {}, additionalProperties: false }, { validate: (v) => v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0 ? { success: true, value: {} } : { success: false, error: new Error("Narzędzie czasu nie przyjmuje parametrów.") } });
   return {
     kursWalutyNBP: tool({ description: "Pobierz prawdziwy średni kurs waluty względem PLN z publicznego API NBP. Używaj zawsze przy pytaniach o kurs i walutę, także dziś lub dla daty historycznej. Zwraca datę publikacji i pobrania; ostatnia tabela może pochodzić z dnia roboczego. Nie jest kursem kantoru ani prognozą. Przy porównaniu z bieżącym przekaż datę historyczną: jedno wykonanie zwróci oba kursy oraz obliczoną zmianę, więc nie potrzebujesz drugiego wywołania.", inputSchema: currencySchema, execute: async (input) => comparison ? await porownajKursWalutyNBP({ ...input, date: comparison.date ?? input.date }, { signal }) : await kursWalutyNBP(input, { signal }) }),
-    pogodaOpenMeteo: tool({ description: "Pobierz bieżące warunki i prognozę z Open-Meteo. Używaj zawsze przy pytaniach o pogodę, dziś, jutro, za tydzień i na kilka dni. Bez miasta wywołaj z city='': narzędzie użyje lokalizacji przeglądarki, jeśli została udostępniona, albo poprosi o miejscowość. Nie zakładaj lokalizacji. Kod pogody to WMO, temperatura °C, opady mm.", inputSchema: weatherSchema, execute: (input) => pogodaOpenMeteo(input, { signal, location }) }),
+    pogodaOpenMeteo: tool({ description: "Pobierz bieżące warunki i prognozę z Open-Meteo. Używaj zawsze przy pytaniach o pogodę, dziś, jutro, za tydzień i na kilka dni. Bez miasta wywołaj z city='': narzędzie użyje lokalizacji przeglądarki, jeśli została udostępniona, albo poprosi o miejscowość. Nie zakładaj lokalizacji. Kod pogody to WMO, temperatura °C, opady mm.", inputSchema: weatherSchema, execute: (input) => pogodaOpenMeteo({ ...input, city: weatherCity ?? input.city }, { signal, location }) }),
     aktualnyCzas: tool({ description: "Pobierz świeżą datę, dzień tygodnia i godzinę zegara serwera w Europe/Warsaw z milisekundami. Używaj do DOKŁADNEJ godziny lub żądania precyzji ms. Proste pytania o godzinę, dziś, jutro i za ile dni nadal korzystają z czasu podanego w instrukcji requestu.", inputSchema: emptySchema, execute: () => aktualnyCzas() }),
   };
 }

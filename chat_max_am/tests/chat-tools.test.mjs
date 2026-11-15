@@ -369,7 +369,7 @@ test("włączona lista odczytuje prawdziwy plik z obiektem i pytaniem o pizzę",
   const { result, reads } = await questionLoader(" TRUE ", contents);
   assert.equal(reads, 1);
   assert.equal(result.invalid, false);
-  assert.equal(result.questions.length, 22);
+  assert.equal(result.questions.length, 23);
   assert.ok(result.questions.includes("Daj przepis na dobrą pizzę"));
 });
 
@@ -380,4 +380,63 @@ test("brak lub błędny plik pytań pokazuje błąd; pusty obiekt jest poprawny"
   const { result } = await questionLoader("true", "{}");
   assert.equal(result.invalid, false);
   assert.equal(result.questions.length, 0);
+});
+
+test('diagnostyka: osobne metadane oraz kopie z JSON, bez zmiany zwykłej kopii i schematu', () => {
+  const timing = { totalMs: 100, modelBeforeToolMs: 30, toolMs: 10, modelAfterToolMs: 50, overheadMs: 10, steps: [], tools: [] };
+  const result = { category: 'unknown', priority: 'normal', draft: 'Godzina: 12:00.', needs_review: false };
+  const message = { role: 'assistant', parts: [{ type: 'data-chat-result', data: result }, { type: 'data-timing', data: { ...timing, privateField: 'nie kopiuj' } }] };
+  assert.equal(JSON.stringify(module.namespace.messageTiming(message)), JSON.stringify(timing));
+  assert.match(formatMessage(message, 'MAX', true), /Diagnostyka:[\s\S]*"timing"/);
+  assert.ok(!formatMessage(message, 'MAX', true).includes('privateField'));
+  assert.ok(!formatMessage(message, 'MAX', false).includes('timing'));
+  assert.equal(module.namespace.messageTiming({ parts: [{ type: 'data-timing', data: { ...timing, totalMs: -1 } }] }), undefined);
+});
+
+test('pogoda bez lokalizacji pokazuje wybór natychmiast, bez wywołania transportu AI', async () => {
+  const { sendWithWeatherLocation } = module.namespace;
+  const sends = [], choices = [];
+  for (const question of ['Jaka jest dziś pogoda?', 'Jaka będzie pogoda za tydzień?', 'Daj pogodę na trzy najbliższe dni', 'Pogoda w najbliższe trzy dni?']) {
+    await sendWithWeatherLocation(question, false, (text) => choices.push(text), async (text) => sends.push(text));
+  }
+  assert.equal(sends.length, 0);
+  assert.equal(choices.length, 4);
+});
+
+test('wybór miasta zachowuje cały zakres pytania i wysyła do zaznaczonych czatów', async () => {
+  const { completeWeatherQuestion, sendWithWeatherLocation } = module.namespace;
+  for (const question of ['Jaka będzie pogoda za tydzień?', 'Daj pogodę na trzy najbliższe dni']) {
+    const sent = [];
+    const completed = completeWeatherQuestion(question, 'Warszawa');
+    await sendWithWeatherLocation(completed, false, () => assert.fail('Miasto już wybrano'), async (text) => {
+      await broadcastMessage(text, { openrouter: true, google: true }, { openrouter: async (value) => sent.push(['openrouter', value]), google: async (value) => sent.push(['google', value]) });
+    });
+    assert.deepEqual(sent, [['openrouter', `${question}\nMiejscowość: Warszawa`], ['google', `${question}\nMiejscowość: Warszawa`]]);
+  }
+});
+
+test('podana miejscowość, zgoda na lokalizację i inne pytania nie są blokowane wyborem miasta', async () => {
+  const { sendWithWeatherLocation } = module.namespace;
+  for (const [question, location] of [['Jaka pogoda w Warszawie za tydzień?', false], ['Pogoda dla Paryża', false], ['Jaka jest dziś pogoda?', true], ['Jaki jest kurs EUR?', false]]) {
+    let called = false;
+    await sendWithWeatherLocation(question, location, () => assert.fail('Niepotrzebny wybór'), async (text) => { called = true; assert.equal(text, question); });
+    assert.equal(called, true);
+  }
+});
+
+test('zmiana miejscowości zastępuje poprzednie linie, zamiast doklejać kolejne', () => {
+  const result = module.namespace.completeWeatherQuestion('Jaka będzie pogoda za tydzień?\nMiejscowość: Radom\nMiejscowość: Warszawa', 'Zakopane');
+  assert.equal(result, 'Jaka będzie pogoda za tydzień?\nMiejscowość: Zakopane');
+});
+
+test('kopia diagnostyczna pokazuje wiadomość i faktyczne argumenty, bez dodatkowych pól', () => {
+  const request = { endpoint: '/api/chat', provider: 'google', model: 'test/model', mode: 'chat', message: 'Jaka pogoda?\nMiejscowość: Zakopane', historyMessageCount: 3, location: null, toolCalls: [{ attempt: 1, step: 0, name: 'pogodaOpenMeteo', input: { city: 'Radom', days: 1, startOffsetDays: 0, apiKey: 'PRIVATE' }, effectiveInput: { city: 'Zakopane', days: 1, startOffsetDays: 0 } }], headers: { Authorization: 'PRIVATE' } };
+  const message = { role: 'assistant', parts: [{ type: 'text', text: 'Prognoza.' }, { type: 'data-request', data: request }] };
+  const safe = module.namespace.messageRequest(message);
+  assert.equal(safe.message, request.message);
+  assert.equal(safe.toolCalls[0].input.city, 'Radom');
+  assert.equal(safe.toolCalls[0].effectiveInput.city, 'Zakopane');
+  assert.ok(!JSON.stringify(safe).includes('PRIVATE'));
+  assert.match(formatMessage(message, 'MAX', true), /"request"[\s\S]*Zakopane/);
+  assert.ok(!formatMessage(message, 'MAX', false).includes('request'));
 });

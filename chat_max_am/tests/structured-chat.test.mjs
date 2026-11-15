@@ -1,3 +1,4 @@
+import { loadTimingModule } from "./timing-helper.mjs";
 import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
@@ -64,9 +65,10 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
     controller.enqueue({ type: "finish", finishReason: { unified: reason, raw: reason }, providerMetadata: groundingQueries.length ? { google: { groundingMetadata: { webSearchQueries: groundingQueries } } } : undefined, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
     controller.close();
   } }) }; } });
-  const context = vm.createContext({ Response, Request, URL, URLSearchParams, AbortSignal, fetch: publicFetch ?? (() => { throw Error("Unexpected public API call"); }), process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
+  const context = vm.createContext({ performance, Response, Request, URL, URLSearchParams, AbortSignal, fetch: publicFetch ?? (() => { throw Error("Unexpected public API call"); }), process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
   const settings = await loadSettingsModule(context, publicConfig);
   const publicTools = await loadPublicToolsModule(context);
+  const timing = await loadTimingModule(context);
   const schema = new vm.SourceTextModule(compile(schemaSource), { context });
   await schema.link(() => {});
   const aiModule = new vm.SyntheticModule(Object.keys(ai), function () { for (const key of Object.keys(ai)) this.setExport(key, ai[key]); }, { context });
@@ -74,7 +76,7 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
   const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", () => Object.assign(() => google, { tools: createGoogleGenerativeAI({ apiKey: "fake-key" }).tools })); }, { context });
   const auth = new vm.SyntheticModule(["requireSession"], function () { this.setExport("requireSession", async () => null); }, { context });
   const route = new vm.SourceTextModule(compile(routeSource), { context });
-  await route.link((name) => ({ "@/lib/public-tools": publicTools, "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
+  await route.link((name) => ({ "@/lib/chat-timing": timing, "@/lib/public-tools": publicTools, "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
   await route.evaluate();
   return {
     requests, google, schema: schema.namespace,
@@ -472,6 +474,62 @@ test('porównanie EUR obu AI otrzymuje dwa kursy, obliczenia i dwa źródła po 
     const finalRequest = JSON.stringify(calls[1]);
     for (const expected of ['historical', 'current', 'changePLN', 'changePercent', '12.5']) assert.ok(finalRequest.includes(expected), expected);
     assert.equal(chunks.filter((c) => c.type === 'source-url').length, 2);
+    const confirmed = chunks.find((c) => c.type === 'data-chat-result')?.data;
+    assert.match(confirmed.draft, /Wskazany kurs EUR: 4,0000 zł/);
+    assert.match(confirmed.draft, /Bieżący kurs EUR: 4,5000 zł/);
+    assert.match(confirmed.draft, /\+0,5000 zł/);
+    assert.ok(!chunks.filter((c) => c.type === 'data-chat-preview').some((c) => c.data === valid.draft));
     assert.deepEqual(chunks.find((c) => c.type === 'data-used-tools')?.data, ['kursWalutyNBP']);
+  }
+});
+
+test('oba modele przesyłają pomiary dwóch etapów i narzędzia poza JSON schematu', async () => {
+  for (const provider of ['openrouter', 'google']) {
+    const app = await setup({ toolCall: 'aktualnyCzas' });
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Która jest dokładnie godzina? Podaj ms.' }] }]);
+    const timing = chunks.find((c) => c.type === 'data-timing')?.data;
+    assert.ok(timing);
+    assert.equal(timing.steps.length, 2);
+    assert.equal(timing.tools.length, 1);
+    assert.equal(timing.tools[0].name, 'aktualnyCzas');
+    assert.equal(timing.tools[0].success, true);
+    assert.ok(timing.totalMs >= timing.toolMs);
+    for (const key of ['totalMs', 'toolMs', 'modelBeforeToolMs', 'modelAfterToolMs', 'overheadMs']) assert.ok(Number.isFinite(timing[key]) && timing[key] >= 0);
+    assert.deepEqual(chunks.find((c) => c.type === 'data-chat-result')?.data, valid);
+  }
+});
+
+test('diagnostyka obejmuje nieudaną próbę Gemini i ponowienie; błąd nie staje się wynikiem', async () => {
+  const fallback = await setup({ googleQuotaFirst: true });
+  const successful = await fallback.post('google');
+  const timing = successful.chunks.find((c) => c.type === 'data-timing')?.data;
+  assert.deepEqual(timing.steps.map((step) => step.attempt), [1, 2]);
+  const failed = await setup({ providerError: 503 });
+  const { chunks } = await failed.post('google');
+  assert.ok(chunks.some((c) => c.type === 'error'));
+  assert.ok(chunks.some((c) => c.type === 'data-timing'));
+  assert.ok(!chunks.some((c) => c.type === 'data-chat-result'));
+});
+
+test('bieżące miasto ma pierwszeństwo nad błędnymi argumentami modelu i trafia do diagnostyki', async () => {
+  for (const provider of ['google', 'openrouter']) {
+    const urls = [];
+    const app = await setup({ toolCall: 'pogodaOpenMeteo', toolInput: { city: 'Radom', startOffsetDays: 0, days: 1 }, publicFetch: async (url) => {
+      urls.push(url);
+      const data = String(url).includes('geocoding') ? { results: [{ name: 'Zakopane', country: 'Polska', latitude: 49.3, longitude: 19.95 }] } : { timezone: 'Europe/Warsaw', daily: { time: ['2026-11-15'], temperature_2m_min: [-2], temperature_2m_max: [3], precipitation_sum: [0], weather_code: [3] } };
+      return new Response(JSON.stringify(data));
+    } });
+    const question = 'Jaka jest dziś pogoda?\nMiejscowość: Zakopane';
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: question }] }]);
+    assert.ok(!chunks.some((c) => c.type === 'error'), JSON.stringify(chunks));
+    assert.equal(new URL(urls[0]).searchParams.get('name'), 'Zakopane');
+    const request = chunks.find((c) => c.type === 'data-request')?.data;
+    assert.equal(request.provider, provider);
+    assert.equal(request.message, question);
+    assert.equal(request.historyMessageCount, 1);
+    assert.equal(request.toolCalls[0].input.city, 'Radom');
+    assert.equal(request.toolCalls[0].effectiveInput.city, 'Zakopane');
+    assert.ok(!JSON.stringify(request).includes('test-only-key'));
+    assert.ok(!JSON.stringify(request).includes('Authorization'));
   }
 });

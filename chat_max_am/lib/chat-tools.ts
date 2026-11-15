@@ -1,5 +1,33 @@
+import type { ChatTiming, ChatRequestDiagnostics } from "./chat-timing";
 import type { UIMessage } from "ai";
 import { isChatResult, type ChatRequestMode } from "./chat-result";
+
+export function messageTiming(message: Pick<UIMessage, "parts">): ChatTiming | undefined {
+  const part = [...message.parts].reverse().find((item) => item.type === "data-timing");
+  if (!part || !("data" in part) || !part.data || typeof part.data !== "object") return;
+  const data = part.data as Record<string, unknown>;
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const keys = ["totalMs", "modelBeforeToolMs", "toolMs", "modelAfterToolMs", "overheadMs"] as const;
+  if (keys.some((key) => !valid(data[key])) || !Array.isArray(data.steps) || !Array.isArray(data.tools)) return;
+  const steps = data.steps.flatMap((item) => item && typeof item === "object" && [item.attempt, item.step, item.modelMs, item.toolMs, item.totalMs].every(valid) ? [{ attempt: item.attempt, step: item.step, modelMs: item.modelMs, toolMs: item.toolMs, totalMs: item.totalMs }] : []);
+  const tools = data.tools.flatMap((item) => item && typeof item === "object" && typeof item.name === "string" && /^[A-Za-z]\w{0,63}$/.test(item.name) && [item.attempt, item.step, item.durationMs].every(valid) && typeof item.success === "boolean" ? [{ name: item.name, attempt: item.attempt, step: item.step, durationMs: item.durationMs, success: item.success }] : []);
+  return { totalMs: data.totalMs as number, modelBeforeToolMs: data.modelBeforeToolMs as number, toolMs: data.toolMs as number, modelAfterToolMs: data.modelAfterToolMs as number, overheadMs: data.overheadMs as number, steps, tools };
+}
+
+export function messageRequest(message: Pick<UIMessage, "parts">): ChatRequestDiagnostics | undefined {
+  const part = [...message.parts].reverse().find((item) => item.type === "data-request");
+  if (!part || !("data" in part) || !part.data || typeof part.data !== "object") return;
+  const data = part.data as Record<string, unknown>;
+  if (data.endpoint !== "/api/chat" || (data.provider !== "openrouter" && data.provider !== "google") || !["chat", "analysis", "duel"].includes(String(data.mode)) || typeof data.model !== "string" || typeof data.message !== "string" || typeof data.historyMessageCount !== "number" || !Number.isInteger(data.historyMessageCount) || data.historyMessageCount < 0 || !Array.isArray(data.toolCalls)) return;
+  const safeInput = (input: unknown): Record<string, string | number | boolean | null> => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+    return Object.fromEntries(Object.entries(input).filter(([key, value]) => ["city", "startOffsetDays", "days", "currency", "date"].includes(key) && (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))));
+  };
+  const toolCalls = data.toolCalls.flatMap((call) => call && typeof call === "object" && typeof call.name === "string" && /^[A-Za-z]\w{0,63}$/.test(call.name) && Number.isInteger(call.attempt) && call.attempt >= 1 && Number.isInteger(call.step) && call.step >= 0 ? [{ attempt: call.attempt, step: call.step, name: call.name, input: safeInput(call.input), effectiveInput: safeInput(call.effectiveInput) }] : []);
+  const coords = data.location as Record<string, unknown> | null;
+  const location = coords && typeof coords.latitude === "number" && Number.isFinite(coords.latitude) && Math.abs(coords.latitude) <= 90 && typeof coords.longitude === "number" && Number.isFinite(coords.longitude) && Math.abs(coords.longitude) <= 180 ? { latitude: coords.latitude, longitude: coords.longitude } : null;
+  return { endpoint: "/api/chat", provider: data.provider, model: data.model, mode: data.mode as ChatRequestDiagnostics["mode"], message: data.message, historyMessageCount: data.historyMessageCount, location, toolCalls };
+}
 
 export function formatResponseTime(milliseconds?: number) {
   if (milliseconds === undefined || !Number.isFinite(milliseconds) || milliseconds < 0) return "";
@@ -79,7 +107,11 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
   const tools = message.role === "assistant" ? messageUsedTools(message) : [];
   if (tools.length) copy += `\nużyto: ${tools.join(", ")}`;
   if (message.role === "assistant" && messageHasSearchFallback(message)) copy += `\n${searchFallbackNotice(message)}`;
-  return withJson && result ? `${copy}\nJSON:\n${JSON.stringify(result, null, 2)}` : copy;
+  if (withJson && result) copy += `\nJSON:\n${JSON.stringify(result, null, 2)}`;
+  const timing = withJson && message.role === "assistant" ? messageTiming(message) : undefined;
+  const request = withJson && message.role === "assistant" ? messageRequest(message) : undefined;
+  if (timing || request) copy += `\nDiagnostyka:\n${JSON.stringify({ ...(request ? { request } : {}), ...(timing ? { timing } : {}) }, null, 2)}`;
+  return copy;
 }
 
 export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assistantName: string, withJson = false, responseTime?: number) {
@@ -143,6 +175,27 @@ export function formatCombinedConversation(openrouter: UIMessage[], google: UIMe
     ...group.openrouter,
     ...group.google,
   ]).join(`\n${"-".repeat(63)}\n`);
+}
+
+export function weatherNeedsLocation(text: string, hasLocation: boolean) {
+  if (hasLocation) return false;
+  const plain = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ł/g, "l");
+  if (!/pogod|prognoz|temperatur|bedzie padac|czy pada|opad|deszcz|snieg/.test(plain)) return false;
+  if (/(?:miejscowosc|miasto)\s*:\s*\p{L}/u.test(plain) || /radom|warszaw|zakopan|gdansk|krakow|wroclaw|poznan|lodz|szczecin|lublin/.test(plain)) return false;
+  const place = plain.match(/\b(?:w|we|dla)\s+(\p{L}[\p{L}-]*)/u)?.[1];
+  return !place || /^(?:najbliz|przysz|tym|ten|te|ciagu|weekend|tygod|poniedzial|wtorek|srod|czwart|piatek|sobot|niedziel|dzien)/.test(place);
+}
+
+export function completeWeatherQuestion(question: string, city: string) {
+  const original = question.replace(/^\s*(?:Miejscowość|Miasto)\s*:.*$/gim, "").trim();
+  return `${original}\nMiejscowość: ${city.trim()}`;
+}
+
+export async function sendWithWeatherLocation(text: string, hasLocation: boolean, selectLocation: (question: string) => void, send: (text: string) => Promise<void>) {
+  const question = text.trim();
+  if (!question) return;
+  if (weatherNeedsLocation(question, hasLocation)) { selectLocation(question); return; }
+  await send(question);
 }
 
 export async function broadcastMessage(text: string, active: Record<"openrouter" | "google", boolean>, senders: Record<"openrouter" | "google", (text: string) => Promise<void>>) {
