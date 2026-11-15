@@ -2,15 +2,16 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 
 import { createDuelPause, runDuel } from "@/lib/duel";
+import type { WeatherLocation } from "@/lib/public-tools";
 import type { ChatRequestMode } from "@/lib/chat-result";
 import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools, searchFallbackNotice } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -36,11 +37,12 @@ function pasteMessage(event: ClipboardEvent<HTMLInputElement | HTMLTextAreaEleme
   requestAnimationFrame(() => input.setSelectionRange(start + text.length, start + text.length));
 }
 
-function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis", id: string = provider) {
+function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis", id: string = provider, location?: WeatherLocation) {
   const startedAt = useRef<number | null>(null);
   const [responseTimes, setResponseTimes] = useState<Record<string, number>>({});
   const lastReply = useRef<string | null>(null);
   const lastMode = useRef<ChatRequestMode>("chat");
+  const lastLocation = useRef<WeatherLocation | undefined>(undefined);
   const retrying = useRef(false);
   const chat = useChat({
     id,
@@ -70,22 +72,24 @@ function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis"
     },
     async sendText(text: string, sharedTurnId?: string, sentAt = Date.now()) {
       lastMode.current = mode;
+      lastLocation.current = location;
       startedAt.current = performance.now();
-      await chat.sendMessage({ text, metadata: { sentAt, ...(sharedTurnId ? { sharedTurnId } : {}) } }, { body: { mode } });
+      await chat.sendMessage({ text, metadata: { sentAt, ...(sharedTurnId ? { sharedTurnId } : {}) } }, { body: { mode, ...(location ? { location } : {}) } });
     },
     async retryLastRequest() {
       if (retrying.current || chat.status !== "error" || !chat.error) return;
       retrying.current = true;
       lastReply.current = null;
       startedAt.current = performance.now();
-      try { await retryLastChatRequest(chat, lastMode.current); }
+      try { await retryLastChatRequest(chat, lastMode.current, lastLocation.current); }
       finally { retrying.current = false; }
     },
     async reply(text: string) {
       lastMode.current = "duel";
+      lastLocation.current = location;
       startedAt.current = performance.now();
       lastReply.current = null;
-      await chat.sendMessage({ text, metadata: { sentAt: Date.now() } }, { body: { mode: "duel" } });
+      await chat.sendMessage({ text, metadata: { sentAt: Date.now() } }, { body: { mode: "duel", ...(location ? { location } : {}) } });
       return lastReply.current;
     },
   };
@@ -127,13 +131,16 @@ function UsedTools({ message }: { message: UIMessage }) {
 }
 
 function Sources({ message }: { message: UIMessage }) {
-  if (messageHasSearchFallback(message)) return <p className="message-metadata">Bez wyszukiwania — limit API. Bieżące dane nie zostały zweryfikowane w internecie.</p>;
+  const fallback = messageHasSearchFallback(message);
   const sources = messageSources(message);
-  if (!sources.length) return null;
-  return <div className="message-sources"><h4>Źródła</h4><ul>{sources.map((source) => <li key={source.url}>
-    <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
-    <small>pobrano: {formatSourceDate(source.fetchedAt)}</small>
-  </li>)}</ul></div>;
+  if (!sources.length && !fallback) return null;
+  return <>
+    {fallback && <p className="message-metadata">{searchFallbackNotice(message)}</p>}
+    {sources.length > 0 && <div className="message-sources"><h4>Źródła</h4><ul>{sources.map((source) => <li key={source.url}>
+      <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
+      <small>pobrano: {formatSourceDate(source.fetchedAt)}</small>
+    </li>)}</ul></div>}
+  </>;
 }
 
 function ResponseTime({ milliseconds }: { milliseconds?: number }) {
@@ -141,15 +148,16 @@ function ResponseTime({ milliseconds }: { milliseconds?: number }) {
   return label ? <small className="response-time" title="Czas od wysłania zapytania do odebrania pełnej odpowiedzi, wraz z walidacją">· {label}</small> : null;
 }
 
-function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChange }: {
+function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChange, location }: {
   active: EnabledProviders;
   enabled: EnabledProviders;
   modelNames: ModelNames;
   setActive: (value: EnabledProviders | ((previous: EnabledProviders) => EnabledProviders)) => void;
   onBusyChange: (busy: boolean) => void;
+  location?: WeatherLocation;
 }) {
-  const openrouter = useMaxChat("openrouter", "analysis", "analysis-openrouter");
-  const google = useMaxChat("google", "analysis", "analysis-google");
+  const openrouter = useMaxChat("openrouter", "analysis", "analysis-openrouter", location);
+  const google = useMaxChat("google", "analysis", "analysis-google", location);
   const [clientMessage, setClientMessage] = useState("");
   const sending = useRef(false);
   const busy = openrouter.isBusy || google.isBusy;
@@ -281,10 +289,71 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
   </div>;
 }
 
+function QuestionPicker({ questions, value, onChange, disabled, inputRef }: { questions: string[]; value: string; onChange: (value: string) => void; disabled: boolean; inputRef: RefObject<HTMLInputElement | null> }) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: globalThis.PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+  const [highlighted, setHighlighted] = useState(-1);
+  const visible = filter && value.trim() ? questions.filter((question) => question.toLocaleLowerCase("pl").includes(value.trim().toLocaleLowerCase("pl"))) : questions;
+  const expanded = open && !disabled && questions.length > 0;
+  function choose(question: string) {
+    onChange(question);
+    setOpen(false);
+    setHighlighted(-1);
+  }
+  return <div ref={root} className="question-combo" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
+    <input ref={inputRef} id="shared-question" role="combobox" aria-expanded={expanded} aria-controls="test-questions" aria-autocomplete="list" aria-activedescendant={expanded && highlighted >= 0 ? `test-question-${highlighted}` : undefined}
+      value={value} onFocus={() => { setOpen(true); setFilter(false); }} onChange={(event) => { onChange(event.target.value); setFilter(true); setOpen(true); setHighlighted(-1); }}
+      onPaste={(event) => pasteMessage(event, onChange)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") { setOpen(false); setHighlighted(-1); }
+        if ((event.key === "ArrowDown" || event.key === "ArrowUp") && questions.length) {
+          event.preventDefault(); setOpen(true);
+          const next = event.key === "ArrowDown" ? Math.min(highlighted + 1, visible.length - 1) : Math.max(highlighted - 1, 0);
+          setHighlighted(next);
+          document.getElementById(`test-question-${next}`)?.scrollIntoView({ block: "nearest" });
+        }
+        if (event.key === "Enter") {
+          if (expanded && highlighted >= 0 && visible[highlighted]) { event.preventDefault(); choose(visible[highlighted]); }
+          else setOpen(false);
+        }
+      }}
+      placeholder={questions.length ? "Wybierz pytanie lub wpisz wiadomość…" : "Wpisz wiadomość do zaznaczonych czatów…"} disabled={disabled} autoComplete="off" />
+    {value && <button type="button" className="clear-question" aria-label="Wyczyść wiadomość" title="Wyczyść" disabled={disabled} onClick={() => { onChange(""); setFilter(false); setHighlighted(-1); inputRef.current?.focus(); }}>×</button>}
+    {questions.length > 0 && <button type="button" className="toggle-questions" aria-label={expanded ? "Zwiń pytania" : "Rozwiń pytania"} aria-expanded={expanded} aria-controls="test-questions" disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => { setOpen(!expanded); setFilter(false); setHighlighted(-1); }}>▾</button>}
+    {expanded && <ul id="test-questions" className="question-options" role="listbox" aria-label="Pytania testowe">
+      {visible.map((question, index) => <li key={question} id={`test-question-${index}`} role="option" aria-selected={highlighted === index} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(question)}>{question}</li>)}
+      {!visible.length && <li className="no-questions" role="presentation">Brak pasujących pytań — możesz wysłać własną wiadomość.</li>}
+    </ul>}
+  </div>;
+}
+
 export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5, appInfo, testQuestions = { questions: [], invalid: false } }: { enabled: EnabledProviders; modelNames?: ModelNames; roundsPerBatch?: number; appInfo: AppInfo; testQuestions?: { questions: string[]; invalid: boolean } }) {
   const [mode, setMode] = useState<"chat" | "analysis">("chat");
-  const openrouter = useMaxChat("openrouter", "chat");
-  const google = useMaxChat("google", "chat");
+  const [location, setLocation] = useState<WeatherLocation>();
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState("");
+  const openrouter = useMaxChat("openrouter", "chat", "openrouter", location);
+  const google = useMaxChat("google", "chat", "google", location);
+  function requestLocation() {
+    if (locating) return;
+    setLocationError("");
+    if (!window.isSecureContext || !navigator.geolocation) { setLocationError("Lokalizacja wymaga HTTPS lub localhost oraz obsługi w przeglądarce. Możesz wpisać miasto w wiadomości."); return; }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(({ coords }) => {
+      setLocation({ latitude: Math.round(coords.latitude * 1000) / 1000, longitude: Math.round(coords.longitude * 1000) / 1000 });
+      setLocating(false);
+    }, (error) => {
+      setLocationError(error.code === 1 ? "Brak zgody na lokalizację. Możesz wpisać miasto w wiadomości." : error.code === 3 ? "Przekroczono czas pobierania lokalizacji. Spróbuj ponownie lub wpisz miasto." : "Nie udało się ustalić lokalizacji. Możesz wpisać miasto w wiadomości.");
+      setLocating(false);
+    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+  }
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [dueling, setDueling] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -306,6 +375,11 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
   const busy = openrouter.isBusy || google.isBusy;
   const activeCount = Number(active.openrouter) + Number(active.google);
   const sharedDisabled = busy || dueling || sendingShared || activeCount === 0;
+  const weatherRequested = [openrouter.messages, google.messages].some((messages) => {
+    const question = [...messages].reverse().find((message) => message.role === "user");
+    const text = question ? messageText(question).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") : "";
+    return /pogod|prognoz|temperatur|bedzie padac|czy pada|opad|deszcz|snieg/.test(text);
+  });
 
   function clearAllConversations() {
     if (busy || duelController.current || sharedSending.current) return;
@@ -438,8 +512,14 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
         <h1>Jestem <span>MAX</span>, od AM</h1>
         <p className="subtitle">Twoja krypta. Wybierz jednego MAX-a lub zaproś obu do pojedynku.</p>
       </header>
+      {weatherRequested && <div className="location-controls" data-ready={Boolean(location)}>
+        {!location && <span className="location-hint"><strong>Pogoda w Twojej okolicy?</strong> Kliknij „Moja lokalizacja” i zezwól przeglądarce na jej udostępnienie. Możesz też wpisać miasto w wiadomości.</span>}
+        <button type="button" className="secondary-button location-button" onClick={requestLocation} disabled={locating || busy || analysisBusy || dueling}>{locating ? "Ustalam lokalizację…" : location ? "📍 Zmień lokalizację" : "📍 Moja lokalizacja"}</button>
+        {location && <><span role="status">Lokalizacja do pogody ustawiona</span><button type="button" className="copy-button" disabled={busy || analysisBusy || dueling} onClick={() => { setLocation(undefined); setLocationError(""); }}>Usuń lokalizację</button></>}
+        {locationError && <span role="alert">{locationError}</span>}
+      </div>}
       <div hidden={mode !== "analysis"}>
-        <AnalysisWorkspace active={active} enabled={enabled} modelNames={modelNames} setActive={setActive} onBusyChange={setAnalysisBusy} />
+        <AnalysisWorkspace active={active} enabled={enabled} modelNames={modelNames} setActive={setActive} onBusyChange={setAnalysisBusy} location={location} />
         <div className="duel-toolbar mode-toolbar">{modeButtons}</div>
       </div>
       <div hidden={mode !== "chat"}>
@@ -451,11 +531,7 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
         </fieldset>
         <form className="shared-composer" onSubmit={(event) => void sendShared(event)}>
           <label className="sr-only" htmlFor="shared-question">Wiadomość do zaznaczonych czatów</label>
-          <div className="question-combo">
-            <input ref={sharedInput} id="shared-question" list={testQuestions.questions.length ? "test-questions" : undefined} value={sharedDraft} onChange={(event) => setSharedDraft(event.target.value)} onPaste={(event) => pasteMessage(event, setSharedDraft)} placeholder={testQuestions.questions.length ? "Wybierz pytanie lub wpisz wiadomość…" : "Wpisz wiadomość do zaznaczonych czatów…"} disabled={sharedDisabled} autoComplete="off" />
-            {sharedDraft && <button type="button" className="clear-question" aria-label="Wyczyść wiadomość" title="Wyczyść" disabled={sharedDisabled} onClick={() => { setSharedDraft(""); sharedInput.current?.focus(); }}>×</button>}
-          </div>
-          {testQuestions.questions.length > 0 && <datalist id="test-questions">{testQuestions.questions.map((question) => <option key={question} value={question} />)}</datalist>}
+          <QuestionPicker questions={testQuestions.questions} value={sharedDraft} onChange={setSharedDraft} disabled={sharedDisabled} inputRef={sharedInput} />
           <button type="submit" disabled={sharedDisabled || !sharedDraft.trim()}>{sendingShared ? "Czekaj…" : mode === "analysis" ? "Analizuj" : "Wyślij"}</button>
         </form>
         <div className="copy-clear-controls">

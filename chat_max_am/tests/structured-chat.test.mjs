@@ -1,3 +1,4 @@
+import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -15,7 +16,7 @@ const routeSource = await readFile(new URL("../app/api/chat/route.ts", import.me
 const schemaSource = await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8");
 const compile = (source) => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText, groundingQueries = [] } = {}) {
+async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText, groundingQueries = [], toolCall, toolInput = {}, publicFetch } = {}) {
   const requests = [];
   const router = createOpenRouter({
     apiKey: "test-only-key",
@@ -24,6 +25,10 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
       if (providerError) return new Response(JSON.stringify({ error: { message: "PRIVATE_PROVIDER_DETAILS" } }), { status: providerError === true ? 503 : providerError, headers: { "content-type": "application/json" } });
       if (disconnected) return new Response(new ReadableStream({ start(controller) { controller.error(new Error("PRIVATE_PROVIDER_DETAILS")); } }), { headers: { "content-type": "text/event-stream" } });
       if (streamErrorCode) return new Response(`data: ${JSON.stringify({ error: { code: streamErrorCode, message: "PRIVATE_PROVIDER_DETAILS", metadata: { raw: "PRIVATE_RAW_DETAILS" } } })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+      if (toolCall && requests.length === 1) {
+        const chunks = [{ id: "test", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: toolCall, arguments: JSON.stringify(toolInput) } }] }, finish_reason: null }] }, { id: "test", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }];
+        return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+      }
       const chunks = [
 
         ...[text.slice(0, 55), text.slice(55)].filter(Boolean).map((content) => ({ id: "test", choices: [{ index: 0, delta: { content, annotations: citations.map((c) => ({ type: "url_citation", url_citation: { url: c.url, title: c.title, start_index: 0, end_index: 10 } })) }, finish_reason: null }] })),
@@ -42,6 +47,11 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
     return { stream: new ReadableStream({ start(controller) {
     if (disconnected) { controller.error(new Error("PRIVATE_PROVIDER_DETAILS")); return; }
     controller.enqueue({ type: "stream-start", warnings: unsupportedWarning ? [{ type: "unsupported", feature: "responseFormat" }] : [] });
+    if (toolCall && googleAttempts === 1) {
+      controller.enqueue({ type: "tool-call", toolCallId: "call-1", toolName: toolCall, input: JSON.stringify(toolInput) });
+      controller.enqueue({ type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
+      controller.close(); return;
+    }
     for (const [index, citation] of citations.entries()) controller.enqueue({ type: "source", sourceType: "url", id: `s${index}`, ...citation });
     controller.enqueue({ type: "text-start", id: "t" });
     controller.enqueue({ type: "text-delta", id: "t", delta: currentText });
@@ -54,8 +64,9 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
     controller.enqueue({ type: "finish", finishReason: { unified: reason, raw: reason }, providerMetadata: groundingQueries.length ? { google: { groundingMetadata: { webSearchQueries: groundingQueries } } } : undefined, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
     controller.close();
   } }) }; } });
-  const context = vm.createContext({ Response, Request, process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
+  const context = vm.createContext({ Response, Request, URL, URLSearchParams, AbortSignal, fetch: publicFetch ?? (() => { throw Error("Unexpected public API call"); }), process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
   const settings = await loadSettingsModule(context, publicConfig);
+  const publicTools = await loadPublicToolsModule(context);
   const schema = new vm.SourceTextModule(compile(schemaSource), { context });
   await schema.link(() => {});
   const aiModule = new vm.SyntheticModule(Object.keys(ai), function () { for (const key of Object.keys(ai)) this.setExport(key, ai[key]); }, { context });
@@ -63,12 +74,12 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
   const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", () => Object.assign(() => google, { tools: createGoogleGenerativeAI({ apiKey: "fake-key" }).tools })); }, { context });
   const auth = new vm.SyntheticModule(["requireSession"], function () { this.setExport("requireSession", async () => null); }, { context });
   const route = new vm.SourceTextModule(compile(routeSource), { context });
-  await route.link((name) => ({ "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
+  await route.link((name) => ({ "@/lib/public-tools": publicTools, "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
   await route.evaluate();
   return {
     requests, google, schema: schema.namespace,
-    async post(provider = "openrouter", messages = [{ id: "u", role: "user", parts: [{ type: "text", text: "Nie mogę się zalogować." }] }], mode = "chat") {
-      const response = await route.namespace.POST(new Request("http://localhost/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, messages, mode }) }));
+    async post(provider = "openrouter", messages = [{ id: "u", role: "user", parts: [{ type: "text", text: "Nie mogę się zalogować." }] }], mode = "chat", location) {
+      const response = await route.namespace.POST(new Request("http://localhost/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, messages, mode, ...(location !== undefined ? { location } : {}) }) }));
       const text = await response.text();
       const chunks = text.split("\n").filter((line) => line.startsWith("data: ") && !line.includes("[DONE]")).map((line) => JSON.parse(line.slice(6)));
       return { response, chunks, text };
@@ -249,7 +260,7 @@ test("źródła przechodzą przez prawdziwy SDK do przeglądarki z datą odbioru
 });
 
 test("błędy OpenRouter wewnątrz SSE HTTP 200 zachowują kod i nie wyciekają do przeglądarki", async () => {
-  for (const [code, expected] of [[400, /HTTP 400.*wyszukiwanie i JSON Schema/], [402, /Brak środków/], [429, /HTTP 429/], [503, /przeciążony|niedostępny/]]) {
+  for (const [code, expected] of [[400, /HTTP 400.*narzędzia i format JSON Schema/], [402, /Brak środków/], [429, /HTTP 429/], [503, /przeciążony|niedostępny/]]) {
     const app = await setup({ streamErrorCode: code });
     const { chunks, text } = await app.post();
     assert.match(chunks.find((chunk) => chunk.type === "error")?.errorText ?? "", expected);
@@ -269,7 +280,7 @@ test("Gemini 429: jedna próba bez narzędzi, ten sam model i historia, jawny br
     assert.ok(first.tools.some((tool) => tool.id === "google.google_search"));
     assert.ok(!second.tools?.length);
     assert.deepEqual(first.prompt.filter((p) => p.role !== "system"), second.prompt.filter((p) => p.role !== "system"));
-    assert.match(second.prompt[0].content, /Wyszukiwanie jest wyłączone/);
+    assert.match(second.prompt[0].content, /Wyszukiwarka jest wyłączona/);
     assert.match(second.prompt[0].content, /nie podawaj kursu, aktualnej ceny ani źródła z pamięci/);
     assert.ok(chunks.some((c) => c.type === "data-search-fallback" && c.data === "quota"));
     assert.ok(!chunks.some((c) => c.type === "source-url" || c.type === "error"));
@@ -321,4 +332,146 @@ test("Gemini raportuje wyszukiwanie potwierdzone metadanymi, także bez linków"
   const { chunks } = await app.post("google");
   assert.deepEqual(chunks.find((c) => c.type === "data-used-tools")?.data, ["google_search"]);
   assert.ok(!chunks.some((c) => c.type === "source-url"));
+});
+
+
+test("aktualnyCzas: prawdziwe function calling i kolejny krok dla obu providerów", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    const app = await setup({ toolCall: "aktualnyCzas" });
+    const { chunks } = await app.post(provider, [{ id: "u", role: "user", parts: [{ type: "text", text: "Która jest DOKŁADNIE godzina z ms?" }] }]);
+    assert.ok(!chunks.some((c) => c.type === "error"), JSON.stringify(chunks));
+    assert.deepEqual(chunks.find((c) => c.type === "data-used-tools")?.data, ["aktualnyCzas"]);
+    assert.ok(chunks.some((c) => c.type === "data-chat-result"));
+    const calls = provider === "google" ? app.google.doStreamCalls : app.requests;
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].toolChoice ?? calls[0].tool_choice, provider === "google" ? { type: "tool", toolName: "aktualnyCzas" } : { type: "function", function: { name: "aktualnyCzas" } });
+    assert.ok(!calls[1].tools?.length);
+    assert.equal(calls[0].responseFormat ?? calls[0].response_format, undefined);
+    assert.equal((calls[1].responseFormat ?? calls[1].response_format)?.type, provider === "google" ? "json" : "json_schema");
+    assert.match(JSON.stringify(calls[1]), /Europe\/Warsaw/);
+    assert.match(JSON.stringify(calls[0]), /aktualnyCzas jest dostępne i wymagane/);
+  }
+});
+
+test("NBP: wymuszone narzędzie, prawdziwy SDK, lokalne dane i źródło", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    let fetches = 0;
+    const app = await setup({ toolCall: "kursWalutyNBP", toolInput: { currency: "EUR", date: "" }, publicFetch: async (url) => {
+      fetches++;
+      assert.match(String(url), /^https:\/\/api.nbp.pl\/api\/exchangerates\/rates\/a\/eur/);
+      return new Response(JSON.stringify({ code: "EUR", rates: [{ mid: 4.25, no: "test/A", effectiveDate: "2026-11-13" }] }), { headers: { "content-type": "application/json" } });
+    } });
+    const { chunks } = await app.post(provider, [{ id: "u", role: "user", parts: [{ type: "text", text: "Jaki jest dziś kurs euro?" }] }]);
+    assert.ok(!chunks.some((c) => c.type === "error"), JSON.stringify(chunks));
+    assert.equal(fetches, 1);
+    assert.deepEqual(chunks.find((c) => c.type === "data-used-tools")?.data, ["kursWalutyNBP"]);
+    assert.ok(chunks.some((c) => c.type === "source-url" && c.url.includes("api.nbp.pl")));
+    assert.ok(chunks.some((c) => c.type === "data-source-fetched"));
+  }
+});
+
+test("zwykłe pytanie o godzinę nie uruchamia narzędzia czasu ani wyszukiwarki", async () => {
+  for (const provider of ["openrouter", "google"]) {
+    const app = await setup();
+    const { chunks } = await app.post(provider, [{ id: "u", role: "user", parts: [{ type: "text", text: "Która jest godzina?" }] }]);
+    assert.ok(!chunks.some((c) => c.type === "data-used-tools"));
+    const call = provider === "google" ? app.google.doStreamCalls[0] : app.requests[0];
+    assert.ok(!call.tools?.length);
+  }
+});
+
+test('pogoda: brak lokalizacji pyta, następne miasto ponownie wymusza narzędzie', async () => {
+  for (const provider of ['openrouter', 'google']) {
+    const question = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Jaka jest dziś pogoda?' }] };
+    const first = await setup({ toolCall: 'pogodaOpenMeteo', toolInput: { city: '', startOffsetDays: 0, days: 1 } });
+    const response = await first.post(provider, [question]);
+    assert.ok(!response.chunks.some((c) => c.type === 'error'), JSON.stringify(response.chunks));
+    assert.deepEqual(response.chunks.find((c) => c.type === 'data-used-tools')?.data, ['pogodaOpenMeteo']);
+    assert.ok(!response.chunks.some((c) => c.type === 'source-url'));
+    const app = await setup({ toolCall: 'pogodaOpenMeteo', toolInput: { city: 'Warszawa', startOffsetDays: 0, days: 1 }, publicFetch: async (url) => new Response(JSON.stringify(String(url).includes('geocoding') ? { results: [{ name: 'Warszawa', country: 'Polska', latitude: 52.23, longitude: 21.01 }] } : { timezone: 'Europe/Warsaw', daily: { time: ['2026-11-15'], temperature_2m_min: [2], temperature_2m_max: [10], precipitation_sum: [0], weather_code: [3] } })) });
+    const { chunks } = await app.post(provider, [question, { id: 'a1', role: 'assistant', parts: [{ type: 'data-chat-result', data: { ...valid, draft: 'Dla jakiej miejscowości sprawdzić pogodę?' } }] }, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'Warszawa' }] }]);
+    assert.ok(!chunks.some((c) => c.type === 'error'), JSON.stringify(chunks));
+    assert.deepEqual(chunks.find((c) => c.type === 'data-used-tools')?.data, ['pogodaOpenMeteo']);
+    assert.ok(chunks.some((c) => c.type === 'source-url' && c.url.includes('open-meteo.com')));
+  }
+});
+
+test('awaria NBP trafia do modelu jako czytelny wynik narzędzia, bez fałszywego źródła', async () => {
+  const app = await setup({ toolCall: 'kursWalutyNBP', toolInput: { currency: 'EUR', date: '' }, publicFetch: async () => new Response('', { status: 503 }) });
+  const { chunks } = await app.post('google', [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Kurs EUR?' }] }]);
+  assert.ok(!chunks.some((c) => c.type === 'error'));
+  assert.ok(!chunks.some((c) => c.type === 'source-url'));
+  assert.match(JSON.stringify(app.google.doStreamCalls[1]), /NBP jest niedostępny/);
+});
+
+
+test('zwykła godzina po dokładnej: narzędzia wyłączone, ostatnie pytanie ma własne zasady', async () => {
+  for (const provider of ['openrouter', 'google']) {
+    const app = await setup();
+    const { chunks } = await app.post(provider, [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Która jest DOKŁADNIE godzina? Podaj ms.' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'data-chat-result', data: { ...valid, draft: 'Godzina: 12:00:00.432 CET.' } }] },
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'Która jest godzina?' }] },
+    ]);
+    const call = provider === 'google' ? app.google.doStreamCalls[0] : app.requests[0];
+    assert.ok(!call.tools?.length);
+    assert.match(JSON.stringify(call), /Dostępne narzędzia w tym żądaniu: brak/);
+    assert.match(JSON.stringify(call), /Nie dodawaj milisekund/);
+    assert.ok(!chunks.some((c) => c.type === 'data-used-tools'));
+  }
+});
+
+test('pominięcie wymaganego narzędzia nie staje się pozornie poprawnym wynikiem', async () => {
+  for (const provider of ['openrouter', 'google']) {
+    const app = await setup({ text: JSON.stringify({ ...valid, draft: 'Narzędzie dokładnego czasu jest niedostępne.' }) });
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Która jest DOKŁADNIE godzina? Podaj ms.' }] }]);
+    assert.ok(!chunks.some((c) => c.type === 'data-chat-result'));
+    assert.match(chunks.find((c) => c.type === 'error')?.errorText, /Model pominął wymagane narzędzie/);
+  }
+});
+
+
+test('lokalizacja requestu trafia do pogody obu providerów; bez pytania o miasto', async () => {
+  for (const provider of ['openrouter', 'google']) {
+    let fetches = 0;
+    const app = await setup({ toolCall: 'pogodaOpenMeteo', toolInput: { city: '', startOffsetDays: 0, days: 1 }, publicFetch: async (url) => {
+      fetches++;
+      assert.equal(new URL(url).hostname, 'api.open-meteo.com');
+      assert.equal(new URL(url).searchParams.get('latitude'), '52.235');
+      return new Response(JSON.stringify({ timezone: 'Europe/Warsaw', daily: { time: ['2026-11-15'], temperature_2m_min: [2], temperature_2m_max: [10], precipitation_sum: [0], weather_code: [3] } }));
+    } });
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Jaka jest dziś pogoda?' }] }], 'chat', { latitude: 52.234567, longitude: 21.012345 });
+    assert.ok(!chunks.some((c) => c.type === 'error'), JSON.stringify(chunks));
+    assert.equal(fetches, 1);
+    assert.deepEqual(chunks.find((c) => c.type === 'data-used-tools')?.data, ['pogodaOpenMeteo']);
+    assert.ok(chunks.some((c) => c.type === 'source-url'));
+  }
+});
+
+test('nieprawidłowa lokalizacja jest odrzucona przed modelem', async () => {
+  const app = await setup();
+  const { response } = await app.post('openrouter', undefined, 'chat', { latitude: 100, longitude: 21 });
+  assert.equal(response.status, 400);
+  assert.equal(app.requests.length, 0);
+});
+
+test('porównanie EUR obu AI otrzymuje dwa kursy, obliczenia i dwa źródła po jednym tool call', async () => {
+  for (const provider of ['openrouter', 'google']) {
+    const urls = [];
+    const app = await setup({ toolCall: 'kursWalutyNBP', toolInput: { currency: 'EUR', date: '' }, publicFetch: async (url) => {
+      urls.push(url);
+      const historical = url.includes('/2026-10-16/');
+      return new Response(JSON.stringify({ code: 'EUR', rates: [{ mid: historical ? 4 : 4.5, no: historical ? 'test-old/A' : 'test-new/A', effectiveDate: historical ? '2026-10-16' : '2026-11-13' }] }));
+    } });
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Porównaj kurs EUR z 2026-10-16 z bieżącym, podaj zmianę.' }] }]);
+    assert.ok(!chunks.some((c) => c.type === 'error'), JSON.stringify(chunks));
+    assert.equal(urls.length, 2);
+    assert.ok(urls.some((url) => url.includes('/2026-10-16/')));
+    const calls = provider === 'google' ? app.google.doStreamCalls : app.requests;
+    assert.equal(calls.length, 2);
+    const finalRequest = JSON.stringify(calls[1]);
+    for (const expected of ['historical', 'current', 'changePLN', 'changePercent', '12.5']) assert.ok(finalRequest.includes(expected), expected);
+    assert.equal(chunks.filter((c) => c.type === 'source-url').length, 2);
+    assert.deepEqual(chunks.find((c) => c.type === 'data-used-tools')?.data, ['kursWalutyNBP']);
+  }
 });

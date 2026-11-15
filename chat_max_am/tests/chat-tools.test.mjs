@@ -369,7 +369,7 @@ test("włączona lista odczytuje prawdziwy plik z obiektem i pytaniem o pizzę",
   const { result, reads } = await questionLoader(" TRUE ", contents);
   assert.equal(reads, 1);
   assert.equal(result.invalid, false);
-  assert.equal(result.questions.length, 13);
+  assert.equal(result.questions.length, 22);
   assert.ok(result.questions.includes("Daj przepis na dobrą pizzę"));
 });
 

@@ -9,10 +9,10 @@ export function formatResponseTime(milliseconds?: number) {
 
 export function messageSources(message: Pick<UIMessage, "parts">) {
   const sources: { url: string; title: string; fetchedAt?: string }[] = [];
-  if (messageHasSearchFallback(message)) return sources;
   const seen = new Set<string>();
   for (const part of message.parts) {
     if (part.type !== "source-url") continue;
+    if (messageHasSearchFallback(message) && !part.sourceId.startsWith("public:")) continue;
     let url: URL;
     try { url = new URL(part.url); } catch { continue; }
     if (!["http:", "https:"].includes(url.protocol) || seen.has(url.href)) continue;
@@ -26,6 +26,11 @@ export function messageSources(message: Pick<UIMessage, "parts">) {
 
 export function messageHasSearchFallback(message: Pick<UIMessage, "parts">) {
   return message.parts.some((part) => part.type === "data-search-fallback" && part.data === "quota");
+}
+
+export function searchFallbackNotice(message: Pick<UIMessage, "parts">) {
+  const direct = message.parts.some((part) => part.type === "source-url" && part.sourceId.startsWith("public:"));
+  return `Bez wyszukiwania — limit API. ${direct ? "Dane pobrano bezpośrednio z publicznego API." : "Bieżące dane nie zostały zweryfikowane w internecie."}`;
 }
 
 export function messageUsedTools(message: Pick<UIMessage, "parts">) {
@@ -73,7 +78,7 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
   let copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
   const tools = message.role === "assistant" ? messageUsedTools(message) : [];
   if (tools.length) copy += `\nużyto: ${tools.join(", ")}`;
-  if (message.role === "assistant" && messageHasSearchFallback(message)) copy += "\nBez wyszukiwania — limit API. Bieżące dane nie zostały zweryfikowane w internecie.";
+  if (message.role === "assistant" && messageHasSearchFallback(message)) copy += `\n${searchFallbackNotice(message)}`;
   return withJson && result ? `${copy}\nJSON:\n${JSON.stringify(result, null, 2)}` : copy;
 }
 
@@ -160,9 +165,9 @@ export async function retryLastChatRequest(chat: {
   status: string;
   error?: Error;
   messages: UIMessage[];
-  regenerate: (options: { body: { mode: ChatRequestMode } }) => Promise<void>;
-}, mode: ChatRequestMode) {
+  regenerate: (options: { body: { mode: ChatRequestMode; location?: { latitude: number; longitude: number } } }) => Promise<void>;
+}, mode: ChatRequestMode, location?: { latitude: number; longitude: number }) {
   if (chat.status !== "error" || !chat.error || !chat.messages.some((message) => message.role === "user")) return;
   // regenerate zastępuje nieudaną odpowiedź bez dodawania ponownie pytania.
-  await chat.regenerate({ body: { mode } });
+  await chat.regenerate({ body: { mode, ...(location ? { location } : {}) } });
 }

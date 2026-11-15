@@ -1,3 +1,4 @@
+import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -24,16 +25,18 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   class TestDate extends Date { constructor() { super(instant); } }
   const context = vm.createContext({ Response, process: { env }, Date: TestDate });
   const settings = await loadSettingsModule(context);
+  const publicTools = await loadPublicToolsModule(context);
   const schemaModule = new vm.SourceTextModule(ts.transpileModule(await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText, { context });
   await schemaModule.link(() => {});
   class MockAPIError extends Error {
     constructor(statusCode) { super("SECRET_PROVIDER_DETAILS"); this.statusCode = statusCode; }
     static isInstance(error) { return error instanceof MockAPIError; }
   }
-  const ai = new vm.SyntheticModule(["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs"], function () {
+  const ai = new vm.SyntheticModule(["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs", "wrapLanguageModel"], function () {
     this.setExport("APICallError", MockAPIError);
     this.setExport("Output", Output);
     this.setExport("stepCountIs", stepCountIs);
+    this.setExport("wrapLanguageModel", (options) => options.model);
     this.setExport("jsonSchema", jsonSchema);
     this.setExport("createUIMessageStream", (options) => { streamError = options.onError; return createUIMessageStream(options); });
     this.setExport("createUIMessageStreamResponse", createUIMessageStreamResponse);
@@ -86,6 +89,7 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
+    if (specifier === "@/lib/public-tools") return publicTools;
     if (specifier === "@/lib/settings") return settings;
     if (specifier === "ai") return ai;
     if (specifier === "@/lib/chat-result") return schemaModule;

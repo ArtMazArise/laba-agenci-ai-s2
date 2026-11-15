@@ -1,3 +1,4 @@
+import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -44,6 +45,10 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
       modules.set(name, settings);
       return settings;
     }
+    if (name === "@/lib/public-tools") {
+      const publicTools = await loadPublicToolsModule(context);
+      await publicTools.evaluate(); modules.set(name, publicTools); return publicTools;
+    }
     let module;
     if (name.startsWith("node:")) {
       const builtin = await import(name);
@@ -76,7 +81,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       }).outputText, { context, identifier: name });
     } else {
-      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs"]
+      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs", "wrapLanguageModel"]
         : name === "@ai-sdk/google" ? ["createGoogleGenerativeAI"]
         : name === "@openrouter/ai-sdk-provider" ? ["createOpenRouter"] : null;
       if (!exports) throw Error(`Unexpected import: ${name}`);

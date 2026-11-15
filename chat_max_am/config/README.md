@@ -52,4 +52,37 @@ Jeśli również próba bez wyszukiwania zwróci 429, aplikacja wyświetla infor
 
 Lista pochodzi z wyników narzędzi SDK, źródeł i metadanych natywnego wyszukiwania (webSearchQueries), nie z tekstu wygenerowanego przez model ani samego faktu skonfigurowania narzędzia. Nieudana próba Gemini nie dopisuje narzędzia do późniejszej odpowiedzi bez wyszukiwania. Kopiowanie umieszcza „użyto” pod needs_review, jeśli odpowiedź ma ten status, lub na końcu tekstu odpowiedzi w pojedynku.
 
-Bieżący czas jest nadal przekazywany w instrukcji serwerowej każdego requestu przez zmienną `currentDateTime` w `app/api/chat/route.ts`. To nie jest osobne narzędzie function calling: aplikacja nie ma zarejestrowanego narzędzia `aktualnyCzas`. Funkcje pomocnicze takie jak `getAppInfo`, `getDuelBatchSize`, `getMaxAttempts` i `loadTestQuestions` nie są udostępnione modelowi jako narzędzia. Obecnie dostępne narzędzia modelu to gotowe `web_search` i `google_search`; nazwy zachowano.
+Bieżący czas jest nadal przekazywany w instrukcji serwerowej każdego requestu przez zmienną `currentDateTime` w `app/api/chat/route.ts`. Proste pytanie o godzinę nadal korzysta z tej wartości, bez wywołania narzędzia. Osobne `aktualnyCzas` obsługuje wyraźne żądanie dokładnej godziny lub milisekund. Funkcje pomocnicze takie jak `getAppInfo`, `getDuelBatchSize`, `getMaxAttempts` i `loadTestQuestions` nie są udostępnione modelowi jako narzędzia. Gotowe narzędzia wyszukiwania to `web_search` i `google_search`; nazwy zachowano. Własne narzędzia opisano poniżej.
+
+
+## Publiczne dane i dokładny zegar
+
+- `kursWalutyNBP`: średni kurs za jedną jednostkę waluty w PLN z tabel A/B, data publikacji, numer tabeli, źródło i czas pobrania. Ostatni kurs może pochodzić z wcześniejszego dnia roboczego. Dla wskazanej daty brak tabeli nie powoduje podmiany na inną datę. [Dokumentacja NBP](https://api.nbp.pl/).
+- `pogodaOpenMeteo`: miejscowość wyszukana przez geocoding, kraj, strefa czasowa, temperatura i kod pogody WMO, prognoza temperatur oraz opadów. Bez miejscowości narzędzie prosi o lokalizację. Maksymalnie 16 dni prognozy; „za tydzień” to offset 7, „trzy najbliższe dni” to 3 dni od dziś. [Prognoza](https://open-meteo.com/en/docs), [geocoding](https://open-meteo.com/en/docs/geocoding-api).
+- `aktualnyCzas`: data, dzień tygodnia i czas serwera w Europe/Warsaw z milisekundami. Precyzja zapisu nie jest gwarancją idealnej synchronizacji zegara ani czasu odebrania odpowiedzi przez użytkownika. Zwykłe pytanie „Która jest godzina?” nadal używa czasu requestu.
+
+Pytanie o kurs i walutę, pogodę lub dokładny czas wymusza odpowiednie function calling po stronie serwera. Przy doprecyzowaniu miejscowości lub waluty uwzględniane jest poprzednie pytanie. Pozostałe aktualne tematy nadal używają wyszukiwarki. Narzędzia nie przyjmują dowolnych adresów URL, nie wymagają kluczy i nie mają dostępu do sekretów. API ma limit czasu 6 sekund na żądanie; awarie zwracają czytelny wynik narzędzia, bez wymyślonych danych. Model musi obsługiwać function calling razem z używanym structured output. Wybranych modeli nie zmieniono.
+
+Udane wyniki NBP i Open-Meteo przekazują do czatu źródło z datą pobrania, także gdy limit wyszukiwarki Gemini spowodował ponowienie. Lista „użyto” i kopie zawierają faktyczne nazwy wykonanych narzędzi; steruje nią dotychczasowe `CHAT_SHOW_USED_TOOLS`. Schemat czterech pól pozostaje bez zmian.
+
+Test w przeglądarce: zapytaj o kurs EUR, następnie o pogodę w Warszawie na trzy dni i za tydzień. Porównaj zwykłe pytanie o godzinę z żądaniem dokładności do ms: tylko to drugie powinno dopisać `aktualnyCzas`. Nowe pytania są na liście. Testy automatyczne sprawdzają lokalne odpowiedzi API, walidację, awarie, strefę czasową i faktyczny wieloetapowy przepływ SDK obu providerów. Nie wywołują modeli ani prawdziwych API.
+
+
+## Moja lokalizacja
+
+Przycisk „Moja lokalizacja” wywołuje jednorazowe `navigator.geolocation.getCurrentPosition` dopiero po kliknięciu. Przeglądarka pyta o zgodę; HTTPS lub localhost są wymagane. Brak zgody, brak obsługi i przekroczenie 10 sekund pokazują komunikat z możliwością podania miasta w wiadomości. Nie ma geolokalizacji po IP ani śledzenia `watchPosition`. [Specyfikacja Geolocation W3C](https://www.w3.org/TR/geolocation/).
+
+Współrzędne zaokrąglone do trzech miejsc po przecinku są przechowywane w pamięci karty i dołączane do żądań obu czatów oraz analizy. Serwer sprawdza typ, zakres i brak dodatkowych pól, po sprawdzeniu sesji. Przy ponowieniu zachowany jest kontekst lokalizacji pierwotnego żądania. Nie są zapisywane w pliku, bazie ani localStorage; odświeżenie lub „Usuń lokalizację” usuwa je z bieżącego kontekstu. Źródło już wykonanej prognozy w historii zawiera użyte współrzędne w adresie URL.
+
+`pogodaOpenMeteo` przy pustym `city` używa udostępnionych współrzędnych bez geocodingu. Miasto wpisane w pytaniu ma pierwszeństwo. Bez obu informacji dotychczasowe pytanie o miejscowość pozostaje. Jest to kontekst żądania, a nie osobne narzędzie AI: dopisek „użyto” zawiera faktycznie wykonane `pogodaOpenMeteo`.
+
+Test ręczny: kliknij „Moja lokalizacja”, zaakceptuj zgodę i wybierz „Jaka jest dziś pogoda?”. Sprawdź źródło i dopisek narzędzia. Następnie usuń lokalizację i powtórz — bot powinien zapytać o miasto. Odmowę zgody można sprawdzić po zmianie uprawnień lokalizacji w przeglądarce. Testy automatyczne korzystają z lokalnych atrap API, bez geolokalizacji urządzenia i bez wywołań modeli.
+
+
+## Porównanie kursu z bieżącym
+
+Dla pytań o porównanie lub zmianę kursu `kursWalutyNBP` zwraca w jednym wykonaniu dwa potwierdzone wyniki: `historical` i `current`. Kod oblicza `changePLN` (bieżący minus historyczny) i `changePercent` (zmiana / historyczny × 100), zamiast pozostawiać te obliczenia modelowi. Każda tabela ma własną datę publikacji, datę pobrania i źródło. Obydwa źródła trafiają do czatu. Schemat końcowej odpowiedzi nadal ma cztery pola.
+
+Dla pytań „3 dni temu”, „tydzień temu”, „30 dni temu” i „rok temu” serwer wyznacza datę na podstawie dnia w Europe/Warsaw; rok wstecz z 29 lutego oznacza 28 lutego. Jawna data RRRR-MM-DD ma pierwszeństwo. Inne okresy model przekazuje jako datę historyczną. Brak daty wymaga doprecyzowania. Jeśli NBP nie opublikował tabeli w żądanym dniu, narzędzie nie podstawia innej daty i nie tworzy pozornego porównania. Instrukcja nakazuje wykorzystać udane dane narzędzia, a w razie braku wskazać rzeczywisty problem.
+
+Test ręczny obu AI: „Jaki był kurs EUR według NBP 30 dni temu? Porównaj z bieżącym kursem: podaj zmianę w zł i procentach oraz daty tabel.” Sprawdź obie daty, dwa źródła oraz „użyto: kursWalutyNBP”. Testy automatyczne sprawdzają dane przekazane do kolejnego kroku obu modeli i obliczenia na lokalnych fikcyjnych kursach; nie generują rzeczywistej odpowiedzi modeli.

@@ -12,6 +12,15 @@
     "Ile jest dni do końca roku?",
     "Pogadamy po francusku?",
     "Pogadamy po niemiecku?",
-    "Jaki jest dziś kurs euro według NBP? Podaj źródło."
+    "Jaki jest dziś kurs euro według NBP? Podaj źródło.",
+    "Jaki jest bieżący kurs EUR według NBP?",
+    "Jaki był kurs EUR według NBP 3 dni temu? Porównaj z bieżącym kursem: podaj zmianę w zł i procentach oraz daty tabel.",
+    "Jaki był kurs EUR według NBP tydzień temu? Porównaj z bieżącym kursem: podaj zmianę w zł i procentach oraz daty tabel.",
+    "Jaki był kurs EUR według NBP 30 dni temu? Porównaj z bieżącym kursem: podaj zmianę w zł i procentach oraz daty tabel.",
+    "Jaki był kurs EUR według NBP rok temu? Porównaj z bieżącym kursem: podaj zmianę w zł i procentach oraz daty tabel.",
+    "Jaka jest dziś pogoda?",
+    "Jaka będzie pogoda za tydzień?",
+    "Daj pogodę na trzy najbliższe dni",
+    "Która jest DOKŁADNIE godzina? Podaj wynik z dokładnością do ms."
   ]
 }
