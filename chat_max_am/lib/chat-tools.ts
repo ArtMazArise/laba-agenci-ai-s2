@@ -2,6 +2,12 @@ import type { ChatTiming, ChatRequestDiagnostics } from "./chat-timing";
 import type { UIMessage } from "ai";
 import { isChatResult, type ChatRequestMode } from "./chat-result";
 
+export function messageResponseModel(message: Pick<UIMessage, "parts">): string | null | undefined {
+  const part = [...message.parts].reverse().find((item) => item.type === "data-response-model");
+  if (!part || !("data" in part) || !part.data || typeof part.data !== "object" || !("modelId" in part.data)) return;
+  return typeof part.data.modelId === "string" && part.data.modelId.trim() ? part.data.modelId.trim() : null;
+}
+
 export function messageTiming(message: Pick<UIMessage, "parts">): ChatTiming | undefined {
   const part = [...message.parts].reverse().find((item) => item.type === "data-timing");
   if (!part || !("data" in part) || !part.data || typeof part.data !== "object") return;
@@ -18,15 +24,15 @@ export function messageRequest(message: Pick<UIMessage, "parts">): ChatRequestDi
   const part = [...message.parts].reverse().find((item) => item.type === "data-request");
   if (!part || !("data" in part) || !part.data || typeof part.data !== "object") return;
   const data = part.data as Record<string, unknown>;
-  if (data.endpoint !== "/api/chat" || (data.provider !== "openrouter" && data.provider !== "google") || !["chat", "analysis", "duel"].includes(String(data.mode)) || typeof data.model !== "string" || typeof data.message !== "string" || typeof data.historyMessageCount !== "number" || !Number.isInteger(data.historyMessageCount) || data.historyMessageCount < 0 || !Array.isArray(data.toolCalls)) return;
+  if ((data.endpoint !== "/api/chat" && data.endpoint !== "/api/agent") || (data.provider !== "openrouter" && data.provider !== "google") || !["chat", "analysis", "duel"].includes(String(data.mode)) || typeof data.model !== "string" || typeof data.message !== "string" || typeof data.historyMessageCount !== "number" || !Number.isInteger(data.historyMessageCount) || data.historyMessageCount < 0 || !Array.isArray(data.toolCalls)) return;
   const safeInput = (input: unknown): Record<string, string | number | boolean | null> => {
     if (!input || typeof input !== "object" || Array.isArray(input)) return {};
-    return Object.fromEntries(Object.entries(input).filter(([key, value]) => ["city", "startOffsetDays", "days", "currency", "date"].includes(key) && (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))));
+    return Object.fromEntries(Object.entries(input).filter(([key, value]) => ["city", "startOffsetDays", "days", "currency", "date", "prompt", "query"].includes(key) && (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))));
   };
   const toolCalls = data.toolCalls.flatMap((call) => call && typeof call === "object" && typeof call.name === "string" && /^[A-Za-z]\w{0,63}$/.test(call.name) && Number.isInteger(call.attempt) && call.attempt >= 1 && Number.isInteger(call.step) && call.step >= 0 ? [{ attempt: call.attempt, step: call.step, name: call.name, input: safeInput(call.input), effectiveInput: safeInput(call.effectiveInput) }] : []);
   const coords = data.location as Record<string, unknown> | null;
   const location = coords && typeof coords.latitude === "number" && Number.isFinite(coords.latitude) && Math.abs(coords.latitude) <= 90 && typeof coords.longitude === "number" && Number.isFinite(coords.longitude) && Math.abs(coords.longitude) <= 180 ? { latitude: coords.latitude, longitude: coords.longitude } : null;
-  return { endpoint: "/api/chat", provider: data.provider, model: data.model, mode: data.mode as ChatRequestDiagnostics["mode"], message: data.message, historyMessageCount: data.historyMessageCount, location, toolCalls };
+  return { endpoint: data.endpoint, provider: data.provider, model: data.model, mode: data.mode as ChatRequestDiagnostics["mode"], message: data.message, historyMessageCount: data.historyMessageCount, location, toolCalls, ...(Array.isArray(data.images) ? { images: data.images.flatMap((image) => image && typeof image.filename === "string" && typeof image.mediaType === "string" && typeof image.sizeBytes === "number" && Number.isFinite(image.sizeBytes) && image.sizeBytes >= 0 ? [{ filename: image.filename, mediaType: image.mediaType, sizeBytes: image.sizeBytes }] : []) } : {}) };
 }
 
 export function formatResponseTime(milliseconds?: number) {
@@ -104,9 +110,17 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
   const legacyNote = message.role === "assistant" && !result ? raw.match(/(?:^|\n)Do sprawdzenia(?: przez pracownika)?\s*:[ \t]*([\s\S]*?)(?=\nneeds_review\s*=|$)/i)?.[1].trim() : undefined;
   const note = legacyNote || (review ? "Wymagana weryfikacja przez pracownika." : "Brak");
   let copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
+  const actualModel = message.role === "assistant" ? messageResponseModel(message) : undefined;
+  if (actualModel !== undefined) copy += `\nModel: ${actualModel ?? "dostawca nie potwierdził identyfikatora"}`;
   const tools = message.role === "assistant" ? messageUsedTools(message) : [];
   if (tools.length) copy += `\nużyto: ${tools.join(", ")}`;
   if (message.role === "assistant" && messageHasSearchFallback(message)) copy += `\n${searchFallbackNotice(message)}`;
+  for (const part of message.parts) {
+    if (part.type !== "data-vision-description" || !part.data || typeof part.data !== "object") continue;
+    const data = part.data as Record<string, unknown>;
+    if ((data.provider !== "openrouter" && data.provider !== "google") || typeof data.draft !== "string") continue;
+    copy += `\nOpis zdjęcia — ${data.provider === "google" ? "Gemini" : "OpenRouter"}: ${data.draft}\nModel: ${typeof data.modelId === "string" ? data.modelId : "dostawca nie potwierdził identyfikatora"}`;
+  }
   if (withJson && result) copy += `\nJSON:\n${JSON.stringify(result, null, 2)}`;
   const timing = withJson && message.role === "assistant" ? messageTiming(message) : undefined;
   const request = withJson && message.role === "assistant" ? messageRequest(message) : undefined;
@@ -118,6 +132,21 @@ export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assist
   const time = formatResponseTime(responseTime).replace(",", ".").replace(/\s/g, "");
   const author = message.role === "assistant" ? `${assistantName}${time ? `(${time})` : ""}` : "Ty";
   return `${author}: ${copyMessageText(message, withJson)}`;
+}
+
+const escapeClipboardHtml = (text: string) => text.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+
+export function messageImageUrls(message: Pick<UIMessage, "parts">) {
+  return [...new Set(message.parts.flatMap((part) => {
+    const url = part.type === "file" ? part.url : part.type === "data-generated-image" && part.data && typeof part.data === "object" && "imageUrl" in part.data ? part.data.imageUrl : undefined;
+    return typeof url === "string" && url.length <= 8_000_000 && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(url) ? [url] : [];
+  }))];
+}
+
+export function formatMessageHtml(message: Pick<UIMessage, "role" | "parts">, assistantName: string, withJson = false, responseTime?: number) {
+  const text = escapeClipboardHtml(formatMessage(message, assistantName, withJson, responseTime));
+  const images = messageImageUrls(message).map((url) => `<p><img src="${url}" alt="Zdjęcie z rozmowy" style="max-width:100%;height:auto"></p>`).join("");
+  return `<article><div style="white-space:pre-wrap">${text}</div>${images}</article>`;
 }
 
 export function assistantPresentation(text: string) {
@@ -146,11 +175,11 @@ export function clientMessageText(message: Pick<UIMessage, "role" | "parts">) {
   return message.role === "assistant" ? assistantPresentation(text).text : text;
 }
 
-export function formatConversation(messages: UIMessage[], assistantName: string, withJson = false, responseTimes: Record<string, number> = {}) {
-  return messages.filter((message) => messageText(message).trim()).map((message) => formatMessage(message, assistantName, withJson, responseTimes[message.id])).join(`\n${"-".repeat(63)}\n`);
+export function formatConversation(messages: UIMessage[], assistantName: string, withJson = false, responseTimes: Record<string, number> = {}, asHtml = false) {
+  return messages.filter((message) => messageText(message).trim() || messageImageUrls(message).length).map((message) => asHtml ? formatMessageHtml(message, assistantName, withJson, responseTimes[message.id]) : formatMessage(message, assistantName, withJson, responseTimes[message.id])).join(asHtml ? "<hr>" : `\n${"-".repeat(63)}\n`);
 }
 
-export function formatCombinedConversation(openrouter: UIMessage[], google: UIMessage[], withJson = false, responseTimes: Partial<Record<"openrouter" | "google", Record<string, number>>> = {}) {
+export function formatCombinedConversation(openrouter: UIMessage[], google: UIMessage[], withJson = false, responseTimes: Partial<Record<"openrouter" | "google", Record<string, number>>> = {}, asHtml = false) {
   type Group = { question: string; sentAt: number; order: number; openrouter: string[]; google: string[] };
   const groups = new Map<string, Group>();
   for (const [provider, messages] of [["openrouter", openrouter], ["google", google]] as const) {
@@ -161,20 +190,20 @@ export function formatCombinedConversation(openrouter: UIMessage[], google: UIMe
         const key = typeof metadata.sharedTurnId === "string" ? `shared:${metadata.sharedTurnId}` : `${provider}:${message.id}`;
         current = groups.get(key);
         if (!current) {
-          current = { question: messageText(message), sentAt: typeof metadata.sentAt === "number" && Number.isFinite(metadata.sentAt) ? metadata.sentAt : 0, order: groups.size, openrouter: [], google: [] };
+          current = { question: asHtml ? formatMessageHtml(message, "Ty", withJson) : messageText(message), sentAt: typeof metadata.sentAt === "number" && Number.isFinite(metadata.sentAt) ? metadata.sentAt : 0, order: groups.size, openrouter: [], google: [] };
           groups.set(key, current);
         }
       } else if (message.role === "assistant" && current) {
         const text = copyMessageText(message, withJson);
-        if (text) current[provider].push(formatMessage(message, provider === "openrouter" ? "MAX · OpenRouter" : "MAX · Gemini", withJson, responseTimes[provider]?.[message.id]));
+        if (text || messageImageUrls(message).length) current[provider].push(asHtml ? formatMessageHtml(message, provider === "openrouter" ? "MAX · OpenRouter" : "MAX · Gemini", withJson, responseTimes[provider]?.[message.id]) : formatMessage(message, provider === "openrouter" ? "MAX · OpenRouter" : "MAX · Gemini", withJson, responseTimes[provider]?.[message.id]));
       }
     }
   }
   return [...groups.values()].sort((a, b) => a.sentAt - b.sentAt || a.order - b.order).flatMap((group) => [
-    ...(group.question ? [`Ty: ${group.question}`] : []),
+    ...(group.question ? [asHtml ? group.question : `Ty: ${group.question}`] : []),
     ...group.openrouter,
     ...group.google,
-  ]).join(`\n${"-".repeat(63)}\n`);
+  ]).join(asHtml ? "<hr>" : `\n${"-".repeat(63)}\n`);
 }
 
 export function weatherNeedsLocation(text: string, hasLocation: boolean) {
@@ -189,6 +218,12 @@ export function weatherNeedsLocation(text: string, hasLocation: boolean) {
 export function completeWeatherQuestion(question: string, city: string) {
   const original = question.replace(/^\s*(?:Miejscowość|Miasto)\s*:.*$/gim, "").trim();
   return `${original}\nMiejscowość: ${city.trim()}`;
+}
+
+export async function dispatchImageCommand(text: string, generate: (prompt: string) => Promise<void>) {
+  if (!/^\s*Wygeneruj obraz\s*:/i.test(text)) return false;
+  await generate(text);
+  return true;
 }
 
 export async function sendWithWeatherLocation(text: string, hasLocation: boolean, selectLocation: (question: string) => void, send: (text: string) => Promise<void>) {

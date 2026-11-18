@@ -5,7 +5,6 @@ import HauntedScene from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
 
 export default function LoginScreen({ unavailable, maxAttempts = 5, appInfo }: { unavailable?: string; maxAttempts?: number; appInfo: AppInfo }) {
-  const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [jokes, setJokes] = useState<{ name: string; text: string; generated: boolean }[]>([]);
@@ -23,12 +22,14 @@ export default function LoginScreen({ unavailable, maxAttempts = 5, appInfo }: {
 
   async function enter(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!password || pending || seconds > 0 || refreshToRetry || unavailable) return;
+    const form = event.currentTarget;
+    const password = new FormData(form).get("password");
+    if (typeof password !== "string" || !password || pending || seconds > 0 || refreshToRetry || unavailable) return;
     setPending(true);
     setError("");
     try {
       const response = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password, previousJokeProvider }) });
-      setPassword("");
+      form.reset();
       const data = await response.json();
       if (response.ok) { window.location.replace("/"); return; }
       setError(data.error || "Nie udało się wejść do krypty.");
@@ -36,7 +37,7 @@ export default function LoginScreen({ unavailable, maxAttempts = 5, appInfo }: {
       if (data.jokeProvider === "openrouter" || data.jokeProvider === "google") setPreviousJokeProvider(data.jokeProvider);
       setRetryAt(data.retryAt || 0);
       setRefreshToRetry(!!data.refreshToRetry);
-    } catch { setPassword(""); setError("Nie udało się połączyć. Spróbuj ponownie."); }
+    } catch { form.reset(); setError("Nie udało się połączyć. Spróbuj ponownie."); }
     finally { setPending(false); }
   }
 
@@ -49,8 +50,8 @@ export default function LoginScreen({ unavailable, maxAttempts = 5, appInfo }: {
       <p className="subtitle">Limit prób: {maxAttempts}.</p>
       <form onSubmit={enter}>
         <label className="sr-only" htmlFor="workshop-password">Hasło warsztatowe</label>
-        <input id="workshop-password" type="password" name="password" autoComplete="current-password" maxLength={512} value={password} onChange={(event) => setPassword(event.target.value)} disabled={pending || !!unavailable || seconds > 0 || refreshToRetry} required autoFocus />
-        <button disabled={!password || pending || !!unavailable || seconds > 0 || refreshToRetry}>{pending ? "Chwila…" : "Wejdź"}</button>
+        <input id="workshop-password" type="password" name="password" autoComplete="current-password" maxLength={512} disabled={pending || !!unavailable || seconds > 0 || refreshToRetry} required autoFocus />
+        <button type="submit" disabled={pending || !!unavailable || seconds > 0 || refreshToRetry}>{pending ? "Chwila…" : "Wejdź"}</button>
       </form>
       {(unavailable || error) && <p className="chat-feedback chat-error" role="alert">{unavailable || error}</p>}
       {pending && <p className="chat-feedback" role="status">MAX myśli… sprawdza hasło…</p>}

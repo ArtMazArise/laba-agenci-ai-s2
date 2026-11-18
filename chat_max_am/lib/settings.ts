@@ -2,6 +2,8 @@ import fileConfig from "../config.json";
 
 const kinds = {
   OPENROUTER_MODEL: "string",
+  OPENROUTER_IMAGE_MODEL: "string",
+  IMAGE_BRAND_STYLE: "string",
   GEMINI_MODEL: "string",
   OPENROUTER_ENABLED: "boolean",
   GEMINI_ENABLED: "boolean",

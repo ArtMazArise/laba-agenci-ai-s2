@@ -129,3 +129,96 @@ Panel miejscowości jest widoczny wyłącznie dla oczekującego pytania. Wysłan
 „Żądanie i czasy (JSON)” oraz kopie z JSON zawierają teraz osobne `request` obok `timing`. To wybrane dane żądania aplikacji: endpoint, dostawca, ustawiony model, tryb, dokładna bieżąca wiadomość, liczba wiadomości historii, udostępnione współrzędne (lub null) i faktyczne wywołania narzędzi. `input` oznacza argumenty przekazane przez model, `effectiveInput` uwzględnia zastosowane przez serwer miasto lub datę porównania. Rejestrowane są wyłącznie dozwolone pola argumentów własnych narzędzi. Nie jest to zrzut nagłówków HTTP, kluczy, instrukcji systemowej ani całej historii. Dane diagnostyczne nie są ponownie przekazywane do modelu. Schemat biznesowego wyniku pozostaje czteropolowy.
 
 Test ręczny: zapytaj o pogodę, wybierz Radom — panel ma zniknąć od razu. Zadaj nowe pytanie o pogodę i wybierz Zakopane. Wiadomość oraz `request.message` mają zawierać jedną linię miejscowości, a `request.toolCalls[].effectiveInput.city` ma wskazywać Zakopane. Testy lokalne wymuszają błędne miasto modelu i sprawdzają, że wykonanie API obu providerów mimo tego korzysta z miasta w bieżącej wiadomości.
+
+
+## Zdjęcia w wiadomościach
+
+W zwykłym czacie (wspólne pole lub pojedynczy panel) i analizie można wkleić zdjęcie Ctrl+V albo użyć „＋ Zdjęcie” do wyboru pliku. Przed wysłaniem jest podgląd i przycisk usunięcia. Zdjęcie nie jest wysyłane podczas wyboru lub wklejenia — dopiero przy „Wyślij”/„Ślij”/„Analizuj”. Wiadomość bez tekstu otrzymuje prosty opis polecenia po stronie interfejsu. Wspólne zdjęcia trafiają do obu zaznaczonych czatów. Pojedynek nie wysyła zdjęć i jest wyłączony przy załącznikach.
+
+Używany jest interfejs zainstalowanego SDK: `sendMessage({ text, files: FileUIPart[] })`, pliki `type: file` z mediaType, filename i adresem data URL. `validateUIMessages` oraz `convertToModelMessages` przekazują obrazy do OpenRouter/Gemini. Model musi obsługiwać obrazy oraz używany format odpowiedzi; nie zmieniamy wybranego modelu ani dostawcy. HTTP 400 informuje także o potrzebie obsługi obrazów. Klucze i sprawdzenie sesji pozostają na serwerze.
+
+Dozwolone są PNG, JPG/JPEG i WebP. Maksymalnie 3 zdjęcia na wiadomość, do 1,5 MB każde i 2,5 MB łącznie w historii rozmowy. Klient i serwer sprawdzają format, wielkość i sygnaturę pliku. Przy przekroczeniu limitu historii należy wyczyścić czat i użyć mniejszych zdjęć. Zewnętrzne URL plików, SVG, inne typy plików i załączniki w wiadomościach podszywających się pod asystenta są odrzucane przed modelem. Nie ma nowej bazy, bucketu ani osobnego endpointu uploadu; zdjęcia są przesyłane jako część historii rozmowy.
+
+Diagnostyka request.images zawiera nazwy, typy i wielkości zdjęć, bez kopiowania base64 do JSON diagnostycznego. Treść obrazów to dane klienta, a nie instrukcje zmieniające zasady firmy. Po odświeżeniu lub wyczyszczeniu rozmowy zdjęcia nie są utrwalane przez aplikację. Dostawca modelu otrzymuje zdjęcia dopiero przy wysłaniu wiadomości.
+
+Test ręczny: wklej niewielki obraz w pole wiadomości; sprawdź podgląd i usunięcie. Następnie dodaj plik przez „＋ Zdjęcie”, dopisz pytanie i wyślij do zaznaczonych modeli. Sprawdź zdjęcie w historii i metadane images w diagnostyce. Rzeczywisty test rozpoznawania wykonuje użytkownik. Testy automatyczne sprawdzają walidację oraz przekazanie obrazu przez prawdziwy SDK obu providerów wyłącznie z atrapami odpowiedzi, bez wywołań modeli.
+
+
+## Vision i generowanie obrazu
+
+„Dodaj zdjęcie” przyjmuje JPG/PNG/WebP do 4 MB z dysku lub schowka. Duże pliki są optymalizowane w przeglądarce (JPEG, białe tło przezroczystości) przed wysłaniem, aby kodowanie base64 nie przekroczyło limitu żądania Vercel. Limit danych obrazu wysyłanych do modelu pozostaje 1,5 MB na plik i 2,5 MB na historię. Wysłana miniatura pokazuje przygotowany plik. Analiza bieżącego załącznika nie włącza wyszukiwarki i nie wykonuje ponowienia Gemini „bez wyszukiwania”. Instrukcja traktuje opis obrazu jako dozwolone zadanie, bez odsyłania do oferty firmy; pozostałe granice i schemat wyniku pozostają.
+
+Pod odpowiedzią i wygenerowanym obrazem widać „Model: ...”. Identyfikator analizy pochodzi z pola `model` odpowiedzi SSE OpenRouter albo `modelVersion` Google. Zainstalowany provider Google nie przekazuje tego ostatniego pola jako faktycznego modelId, dlatego lekka nakładka fetch odczytuje wyłącznie identyfikator z oryginalnych zdarzeń, bez zmieniania strumienia. Brak identyfikatora oznacza jawny komunikat „dostawca nie potwierdził identyfikatora”, a nie nazwę z konfiguracji. Nagłówek panelu nadal pokazuje model skonfigurowany. Wygenerowany obraz ma modelId z `generateImage().responses`, czyli pola model odpowiedzi OpenRouter.
+
+`POST /api/image` najpierw sprawdza sesję, a dopiero potem parsuje opis i wywołuje model. Przyjmuje wyłącznie `{ "prompt": "..." }`, od 1 do 500 znaków. Używa `generateImage` i `openrouter.imageModel`, n=1, maxRetries=0, klucza OPENROUTER_API_KEY oraz publicznego OPENROUTER_IMAGE_MODEL z config.json (env, gdy nie ma wpisu). Domyślny model z instrukcji to `google/gemini-3.1-flash-image-preview`. Błąd dostępności, limit lub brak obrazu nie powodują automatycznej zmiany modelu ani pozornego wyniku. Generowanie uruchamia przycisk „Wygeneruj obraz” albo jawne polecenie zaczynające się od „Wygeneruj obraz:” wysłane przez „Wyślij”/„Ślij”. Takie polecenie omija zwykłe modele rozmowy i kieruje dokładnie jedno żądanie do /api/image. Zwykłe wiadomości nadal trafiają do /api/chat. Generowanie działa teraz w osobnym trybie Generator. Jedno kliknięcie Generuj robi jedno wywołanie i zapisuje wynik w galerii Generatora. Nie powiela go w dwóch czatach. Jawny prefiks Wygeneruj obraz: wysłany w czacie przełącza na Generator i uruchamia to samo pojedyncze wywołanie. Obraz trafia do historii jako osobny wynik; nie jest automatycznie ponownie wysyłany jako załącznik przy kolejnych pytaniach. Brak nowej bazy i trwałego zapisu wygenerowanych plików.
+
+Oficjalne materiały: [Nano Banana 2](https://openrouter.ai/google/gemini-3.1-flash-image-preview), [generowanie obrazów OpenRouter](https://openrouter.ai/docs/guides/overview/multimodal/image-generation), [Google GenerateContentResponse — modelVersion](https://ai.google.dev/api/generate-content). Implementacja korzysta z API zainstalowanych ai 6 i providera OpenRouter 2.9.1, potwierdzonego w lokalnych docs i typach; nie aktualizowano zależności.
+
+Test ręczny A: dodaj zdjęcie, wybierz „Co widzisz na tym zdjęciu? Opisz w trzech punktach.” i wyślij. Sprawdź miniaturę, konkretną odpowiedź i identyfikator modelu pod nią. Test ręczny B: wybierz nowy opis logo z listy i kliknij „Wygeneruj obraz”. Sprawdź wynik i identyfikator pod obrazem. Nie testowano płatnego generowania ani Vision na prawdziwym modelu; testy lokalne używają prawdziwego SDK i providerów z atrapami HTTP oraz sprawdzają odmienny rzeczywisty model niż ustawiony w żądaniu, brak sesji i błędy.
+
+
+## Generator i kopiowanie grafiki
+
+Tryb „Generator” znajduje się obok „Zwykły czat” i „Analiza wiadomości”. Ma osobne pole opisu (500 znaków), mniejszy przycisk „Generuj”, „Wstaw przykład”, historię grafik i usuwanie wyników. Zwykłe czaty i analiza zachowują swoje historie; wcześniejsze grafiki w czatach nadal są wyświetlane. Wyniki nowego Generatora nie są automatycznie wysyłane do modeli rozmowy. Dostępny model nadal pochodzi z OPENROUTER_IMAGE_MODEL; nie dodawano automatycznego porównywania ani zamiany na droższe modele.
+
+„Kopiuj obraz” przy wygenerowanej grafice i wysłanym zdjęciu zapisuje sam obraz jako image/png. JPEG/WebP są lokalnie konwertowane do PNG na potrzeby schowka. „Kopiuj” i „Kopiuj z JSON” wiadomości przygotowują text/plain, bezpieczny text/html z obrazami i, dla jednej grafiki, image/png. Kopie całego czatu i całości przygotowują HTML z wszystkimi obrazami oraz dotychczasowy tekst. Wspólne pytanie ze zdjęciem pozostaje w kopii całości tylko raz. Surowy JSON wyniku lub diagnostyki nadal kopiuje się jako sam tekst.
+
+Program docelowy wybiera reprezentację: edytor obsługujący HTML może wkleić opis z obrazami, program graficzny może wkleić PNG, a edytor tekstowy sam tekst. Nie wszystkie programy zachowują obrazy z HTML; do samej grafiki służy niezależny „Kopiuj obraz”. Brak obsługi lub odmowa schowka pokazują „Nie skopiowano”; nie udajemy skopiowania obrazu przez ciche zastąpienie go tekstem. Korzystamy z ClipboardItem i navigator.clipboard.write, wyłącznie w reakcji na kliknięcie; nie odczytujemy schowka. Obsługiwane źródła to tylko lokalne data URL PNG/JPEG/WebP, bez pobierania zewnętrznych adresów. Tekst w HTML jest escapowany. [Specyfikacja Clipboard API](https://www.w3.org/TR/clipboard-apis/).
+
+Test ręczny: w Generatorze kliknij „Kopiuj obraz” przy istniejącej grafice i wklej do programu obsługującego obrazy. Następnie sprawdź „Kopiuj” w edytorze HTML/dokumentów. Testy lokalne sprawdzają formaty schowka i treść HTML na atrapach, bez dostępu do systemowego schowka i bez generowania nowych obrazów.
+
+
+## Zapis obrazu i opis Vision w Generatorze
+
+„Zapisz obraz” pod grafiką proponuje nazwę `max-<opis>-<data i godzina Warszawy>.<png|jpg|webp>`. Rozszerzenie odpowiada typowi obrazu. Nazwa ma ograniczoną długość, usuwa znaki ścieżek i normalizuje polskie znaki. Jeśli przeglądarka udostępnia `showSaveFilePicker`, okno otrzymuje suggestedName, typ pliku i startIn=downloads. Użytkownik może zmienić nazwę i miejsce; aplikacja nie wymusza absolutnej ścieżki do katalogu domowego. Bez tego API używany jest zwykły download według ustawień przeglądarki. Anulowanie okna nie uruchamia dodatkowego pobierania. Obraz jest zapisywany bez ponownego generowania i bez zmiany jego bajtów. [Specyfikacja File System Access](https://wicg.github.io/file-system-access/).
+
+Pod obrazem są również przyciski „Opisz — OpenRouter” i „Opisz — Gemini”. Kliknięcie wysyła wybraną grafikę jako file do istniejącego /api/chat z pytaniem o opis w trzech punktach. Większy obraz jest przygotowywany tym samym mechanizmem optymalizacji co załączniki. Wynik Vision i faktyczny identyfikator modelu pojawiają się pod obrazem; błędy są jawne. Samo generowanie obrazu nie uruchamia automatycznie dodatkowej analizy. Opis jest przechowywany w pamięci galerii i trafia do kopii wyniku oraz kopii całości. „Polecenie” przy grafice to prompt generatora, a „Opis zdjęcia” to odpowiedź Vision — są pokazane osobno.
+
+Test ręczny: kliknij „Zapisz obraz” przy istniejącej grafice i sprawdź proponowaną nazwę, rozszerzenie oraz katalog. Następnie kliknij wybrany przycisk „Opisz” i sprawdź trzy punkty oraz model pod opisem. Testy lokalne sprawdzają nazwę i zapis na atrapach systemowego okna, bez rzeczywistego zapisu w Pobranych i bez wywoływania modeli.
+
+
+## Vision w Analizie i standard obrazów
+
+Gdy w Analizie dodano obraz, sekcja zmienia się na „Analiza obrazu — Vision”, a wynik jest opisany jako „Opis zdjęcia”. Zamiast sekcji kategorii/priorytetu i etykiety szkicu wyświetlany jest opis oraz model z API. Schemat czterech pól nadal jest walidowany wewnętrznie. Analiza tekstowej wiadomości klienta zachowuje poprzedni interfejs i reguły firmy.
+
+Vision ma oddzielną instrukcję serwerową: domyślnie trzy konkretne punkty obejmujące obiekt, napisy/szczegóły i kolory/kompozycję. Nie wymaga, aby obraz zawierał wiadomość klienta i nie odsyła do oferty firmy tylko dlatego, że jest grafiką. Tekst na obrazie jest niezaufanym materiałem, nie zmianą zasad. Nieczytelne elementy nie są zgadywane. Rzeczywistą jakość odpowiedzi sprawdza użytkownik na modelu; testy lokalne sprawdzają instrukcję, format i metadane na atrapach.
+
+Standard: trzy klikalne opisy z config/image-prompts.json pojawiają się pod polem wspólnym i w Generatorze. Kliknięcie tylko ustawia treść. „Generuj” pokazuje „Generuję obraz…” i blokuje kolejne generowanie przez stan interfejsu oraz natychmiastową blokadę ref. API nadal generuje n=1, bez retry. „Pobierz” korzysta z mechanizmu zapisu z nazwą, rozszerzeniem i sugestią katalogu Pobrane. PDF, nieobsługiwany format i plik ponad 4 MB są odrzucane w przeglądarce przed FileReader, dekodowaniem lub żądaniem serwerowym.
+
+Test ręczny: w Analizie dodaj grafikę bez tekstowego pytania i kliknij „Analizuj zdjęcie” — oczekiwane trzy konkretne punkty i model pod opisem. Sprawdź trzy podpowiedzi w Generatorze. Próba wybrania PDF lub pliku ponad 4 MB powinna dać komunikat, bez /api/chat w panelu sieci. Wybrany wariant zaawansowany to Styl marki MAX, opisany poniżej.
+
+
+## Styl marki MAX — wariant zaawansowany
+
+Publiczne IMAGE_BRAND_STYLE w głównym config.json określa wspólny styl wszystkich nowych grafik: minimalistyczny mrok, czarne tło #080b08, limonkowy akcent #bdff59, wyraziste kontury, motyw czaszki/wampira i prosty układ. Tekst jest edytowalny w pliku. Gdy pola nie ma, obowiązuje env; pusty/brakujący styl uruchamia serwerowy styl domyślny MAX. Maksymalnie 2000 znaków; błędna konfiguracja blokuje wywołanie modelu.
+
+Po sprawdzeniu sesji /api/image oddziela JSON-em temat użytkownika od stałych zasad wizualnych i dopisuje styl po stronie serwera. Przeglądarka nadal może wysłać wyłącznie prompt do 500 znaków — próby nadpisania stylu lub modelu dodatkowymi polami są odrzucane. Stały format 1:1 jest również przekazywany jako aspectRatio w generateImage. Nie zmieniono modelu ani liczby generowanych obrazów. Dołączenie instrukcji stylu nie jest gwarancją, że model wizualny zawsze zrealizuje każdy detal; wynik ocenia użytkownik.
+
+Odpowiedź API zawiera prompt użytkownika, brandStyle i effectivePrompt faktycznie wysłany do generatora. Pod nową grafiką rozwijane „Polecenie wysłane do generatora — styl MAX” pokazuje ten tekst i umożliwia kopię. To dane publiczne, bez kluczy i nagłówków. Identyfikator modelu nadal pochodzi z odpowiedzi API.
+
+Test ręczny: wygeneruj dwa różne tematy i porównaj wspólną paletę, klimat oraz kwadratowy format. Rozwiń wysłane polecenie, aby potwierdzić dołączenie stylu. Testy lokalne sprawdzają rzeczywisty payload providera na atrapach, w tym sprzeczne żądanie koloru, własny styl z config.json i próbę nadpisania z przeglądarki. Nie generowano płatnych obrazów.
+
+## Agent — wspólny endpoint
+
+Od v03.44 czat oraz analiza korzystają z `POST /api/agent`. Sprawdzenie sesji poprzedza parsowanie danych i każde wywołanie modelu. Klucze nadal pozostają wyłącznie na serwerze. Modele pozostają zgodne z dotychczasowym configiem/env.
+
+- `mode: "chat"`: `streamText`, do pięciu kroków, serwerowe narzędzia `kursWalutyNBP`, `pogodaOpenMeteo`, `aktualnyCzas`, `web_search` i `generujObraz`. Złożone zadanie najpierw zbiera informacje, potem tworzy grafikę. Znane intencje czasu/kursów/pogody nadal wymuszają właściwe API, dalsze kroki wybiera model. Pojedynek zachowuje wewnętrzny tryb zgodności `duel`.
+- `mode: "analyze"`: `generateText` + `Output.object`, ścisły schemat czterech pól i dodatkowa walidacja po stronie serwera. Wynik wraca w tym samym protokole UI jako zatwierdzone dane, bez podglądu niezwalidowanego szkicu. Wewnętrzny alias `analysis` pozostaje dla ponawiania starszych żądań.
+- Gemini używa funkcji `web_search`, która wywołuje natywny Google Search w osobnym zapytaniu **na tym samym skonfigurowanym modelu**. Dzięki temu funkcje aplikacji i wyszukiwanie nie są mieszane w jednym wywołaniu Gemini. OpenRouter używa gotowego `openrouter.tools.webSearch({ maxResults: 3, engine: "native" })`.
+- `generujObraz` korzysta z istniejącego, chronionego mechanizmu generowania i stylu MAX. Do przeglądarki zwraca plik i faktyczny model obrazu. `toModelOutput` przekazuje modelowi tylko krótki tekst wyniku, bez base64 i bez ponownego analizowania obrazu. Maksymalnie jedna udana generacja na pojedyncze żądanie agenta. Przy zaznaczonych obu czatach każdy agent wykonuje swoje zadanie niezależnie.
+- W czacie grafika jest widoczna w odpowiedzi i dopisywana do Generatora. Widok nie przełącza się automatycznie. Usunięta grafika nie wraca do galerii przy kolejnej wiadomości. Etykiety narzędzi pojawiają się w kolejności wywołań; przy wyczerpaniu pięciu kroków bez odpowiedzi pojawia się „Przerwałem po 5 krokach”.
+- Błędy generowania, odmowa, ucięcie, dodatkowe pola lub niezgodny JSON nie są zastępowane poprawnym wynikiem. `send_now`, uprawnienia i instrukcja systemowa z przeglądarki są odrzucane.
+
+Zachowane przejściowo `/api/chat` i `/api/image` umożliwiają powrót i ręczny Generator. Nie usuwamy ich przed sprawdzeniem nowej ścieżki na rzeczywistym modelu. `/api/image` jest też współdzielonym wykonawcą narzędzia (wywołanie funkcji na serwerze, bez żądania sieciowego do własnej aplikacji).
+
+SDK 6: API zweryfikowane w `node_modules/ai/docs/03-ai-sdk-core/15-tools-and-tool-calling.mdx`, `10-generating-structured-data.mdx`, typach `@ai-sdk/provider-utils` i dokumentacji providera Google. W tej wersji obowiązują `system`, `stepCountIs(5)`, `tool({ inputSchema, execute, toModelOutput })`.
+
+Sprawdzenia lokalne: `tests/agent-route.test.mjs` uruchamia prawdziwy SDK i providerów z lokalnymi atrapami HTTP. Obejmuje sesję, dwa narzędzia i obraz, brak base64 w kontynuacji modelu, limit kroków, wynik analizy dla obu providerów, cztery błędne schematy, odmowę, ucięcie i błędy dostawcy. Nie wykonuje zapytań do modeli ani do publicznego internetu.
+
+Test ręczny w zwykłym czacie: „Sprawdź, jaka będzie jutro pogoda w Krakowie, potem wygeneruj plakat zapraszający na poranny bieg po Plantach.” Sprawdź kolejność narzędzi, opis/źródła, obraz i faktyczny model, pozostanie w czacie oraz obecność obrazu po ręcznym przełączeniu do Generatora. Osobno sprawdź analizę wiadomości klienta i próbę `/api/agent` bez sesji (401). Rzeczywiste wywołania wykonuje użytkownik; nie zmieniamy automatycznie modeli na droższe.
+
+### Poprawka pochodzenia i obowiązkowego obrazu
+
+Wewnętrzne wywołanie `/api/image` z agenta zachowuje `Origin`, `Host`, `Sec-Fetch-Site` i cookie wejściowego żądania. Nie tworzy sztucznego Origin ani nie omija `requireSession`/CSRF. Test z prawdziwym modułem autoryzacji obejmuje localhost, proxy Vercel oraz odrzucenie obcej domeny, braku Origin, braku sesji i cross-site.
+
+Wyraźne zadanie wygenerowania grafiki dopisuje `generujObraz` do kolejki wymaganych narzędzi po API pogody/kursu/czasu. `prepareStep` wymusza generator dopiero po zebraniu tych informacji, a końcowa kontrola odrzuca wynik pomijający to narzędzie. Nie polegamy wyłącznie na obietnicy z promptu. Test odtwarza zadanie pogoda w Krakowie + plakat dla obu dostawców bez prawdziwych wywołań API.

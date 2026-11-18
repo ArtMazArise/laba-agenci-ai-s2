@@ -1,17 +1,21 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type UIMessage } from "ai";
+import { DefaultChatTransport, type UIMessage, type FileUIPart } from "ai";
 import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 
 import { createDuelPause, runDuel } from "@/lib/duel";
 import type { WeatherLocation } from "@/lib/public-tools";
 import type { ChatRequestMode } from "@/lib/chat-result";
+import ImageAttachments, { useImageAttachments, prepareImagePart } from "./image-attachments";
 import LogoutButton from "./logout-button";
 import HauntedScene, { Skull } from "./haunted-scene";
 import BuildInfo, { type AppInfo } from "./build-info";
+import { DEFAULT_VISION_QUESTION } from "@/lib/chat-images";
+import imagePrompts from "../config/image-prompts.json";
+import SaveImageButton from "./save-image-button";
 import CopyButton from "./copy-button";
-import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools, searchFallbackNotice, messageTiming, messageRequest, sendWithWeatherLocation, completeWeatherQuestion } from "@/lib/chat-tools";
+import { assistantPresentation, broadcastMessage, formatCombinedConversation, formatConversation, formatMessage, messageText, clientMessageText, messageResult, retryLastChatRequest, analyzeClientMessage, formatResponseTime, messageSources, formatSourceDate, messageHasSearchFallback, messageUsedTools, searchFallbackNotice, messageTiming, messageRequest, messageResponseModel, sendWithWeatherLocation, completeWeatherQuestion, messageImageUrls, formatMessageHtml } from "@/lib/chat-tools";
 
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const response = await fetch(input, init);
@@ -20,8 +24,8 @@ const authenticatedFetch: typeof fetch = async (input, init) => {
 };
 
 const transports = {
-  openrouter: new DefaultChatTransport({ api: "/api/chat", body: { provider: "openrouter" }, fetch: authenticatedFetch }),
-  google: new DefaultChatTransport({ api: "/api/chat", body: { provider: "google" }, fetch: authenticatedFetch }),
+  openrouter: new DefaultChatTransport({ api: "/api/agent", body: { provider: "openrouter" }, fetch: authenticatedFetch }),
+  google: new DefaultChatTransport({ api: "/api/agent", body: { provider: "google" }, fetch: authenticatedFetch }),
 };
 
 function pasteMessage(event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>, setValue: (value: string) => void) {
@@ -37,7 +41,7 @@ function pasteMessage(event: ClipboardEvent<HTMLInputElement | HTMLTextAreaEleme
   requestAnimationFrame(() => input.setSelectionRange(start + text.length, start + text.length));
 }
 
-function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis", id: string = provider, location?: WeatherLocation) {
+function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis", id: string = provider, location?: WeatherLocation, onCompleted?: (message: UIMessage) => void) {
   const startedAt = useRef<number | null>(null);
   const [responseTimes, setResponseTimes] = useState<Record<string, number>>({});
   const lastReply = useRef<string | null>(null);
@@ -52,6 +56,7 @@ function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis"
         const duration = performance.now() - startedAt.current;
         setResponseTimes((previous) => ({ ...previous, [message.id]: duration }));
       }
+      if (!isAbort && !isError && !isDisconnect && messageResult(message)) onCompleted?.(message);
       startedAt.current = null;
       lastReply.current = isAbort || isError || isDisconnect ? null : message.parts
         .filter((part) => part.type === "text").map((part) => part.text).join("");
@@ -70,11 +75,11 @@ function useMaxChat(provider: "openrouter" | "google", mode: "chat" | "analysis"
       startedAt.current = null;
       setResponseTimes({});
     },
-    async sendText(text: string, sharedTurnId?: string, sentAt = Date.now()) {
+    async sendText(text: string, sharedTurnId?: string, sentAt = Date.now(), files: FileUIPart[] = []) {
       lastMode.current = mode;
       lastLocation.current = location;
       startedAt.current = performance.now();
-      await chat.sendMessage({ text, metadata: { sentAt, ...(sharedTurnId ? { sharedTurnId } : {}) } }, { body: { mode, ...(location ? { location } : {}) } });
+      await chat.sendMessage({ text, files, metadata: { sentAt, ...(sharedTurnId ? { sharedTurnId } : {}) } }, { body: { mode: mode === "analysis" ? "analyze" : mode, ...(location ? { location } : {}) } });
     },
     async retryLastRequest() {
       if (retrying.current || chat.status !== "error" || !chat.error) return;
@@ -125,6 +130,11 @@ function PanelHeading({ title, modelName, chat, responseTime, children }: {
   </div>;
 }
 
+function ToolBadges({ message }: { message: UIMessage }) {
+  const labels: Record<string, string> = { web_search: "🔎 wyszukiwanie", google_search: "🔎 wyszukiwanie", generujObraz: "🎨 generujObraz", pogodaOpenMeteo: "🌦 pogodaOpenMeteo", kursWalutyNBP: "💱 kursWalutyNBP", aktualnyCzas: "🕒 aktualnyCzas" };
+  return <div className="tool-badges">{messageUsedTools(message).map((name) => <small className="tool-badge" key={name}>{labels[name] ?? name}</small>)}</div>;
+}
+
 function UsedTools({ message }: { message: UIMessage }) {
   const tools = messageUsedTools(message);
   return tools.length ? <small className="message-metadata">użyto: {tools.join(", ")}</small> : null;
@@ -143,6 +153,11 @@ function Sources({ message }: { message: UIMessage }) {
   </>;
 }
 
+function ActualModel({ message }: { message: UIMessage }) {
+  const model = messageResponseModel(message);
+  return model === undefined ? null : <small className="message-metadata">Model: {model ?? "dostawca nie potwierdził identyfikatora"}</small>;
+}
+
 function TimingDetails({ message }: { message: UIMessage }) {
   const timing = messageTiming(message);
   const request = messageRequest(message);
@@ -156,7 +171,22 @@ function ResponseTime({ milliseconds }: { milliseconds?: number }) {
   return label ? <small className="response-time" title="Czas od wysłania zapytania do odebrania pełnej odpowiedzi, wraz z walidacją">· {label}</small> : null;
 }
 
-function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChange, location }: {
+function AnalyzedImage({ url, index }: { url: string; index: number }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  return <figure className="message-image-wrap analyzed-image">
+    <button type="button" className="image-preview-button" onClick={() => dialog.current?.showModal()} aria-label={`Powiększ analizowane zdjęcie ${index + 1}`}>
+      <img className="message-image analyzed-image-thumbnail" src={url} alt={`Analizowane zdjęcie ${index + 1}`} />
+    </button>
+    <figcaption><button type="button" className="copy-button" onClick={() => dialog.current?.showModal()}>Powiększ zdjęcie</button> <CopyButton text="" imageUrl={url} imageOnly label="Kopiuj obraz" /></figcaption>
+    <dialog ref={dialog} className="image-preview-dialog" aria-label="Podgląd analizowanego zdjęcia">
+      <button type="button" className="copy-button" onClick={() => dialog.current?.close()} autoFocus>Zamknij</button>
+      <img src={url} alt={`Analizowane zdjęcie ${index + 1} — powiększenie`} />
+    </dialog>
+  </figure>;
+}
+
+function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChange, location, modeButtons }: {
+  modeButtons: ReactNode;
   active: EnabledProviders;
   enabled: EnabledProviders;
   modelNames: ModelNames;
@@ -167,59 +197,82 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
   const openrouter = useMaxChat("openrouter", "analysis", "analysis-openrouter", location);
   const google = useMaxChat("google", "analysis", "analysis-google", location);
   const [clientMessage, setClientMessage] = useState("");
+  const [lastAnalysisWasImage, setLastAnalysisWasImage] = useState(false);
+  const attachments = useImageAttachments();
   const sending = useRef(false);
   const busy = openrouter.isBusy || google.isBusy;
+  const visionView = attachments.files.length > 0 || lastAnalysisWasImage;
   const activeCount = Number(active.openrouter) + Number(active.google);
   useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
   useEffect(() => () => { void openrouter.stop(); void google.stop(); }, [openrouter.stop, google.stop]);
 
   async function analyze(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!clientMessage.trim() || !activeCount || busy || sending.current) return;
+    if ((!clientMessage.trim() && !attachments.files.length) || !activeCount || busy || sending.current || attachments.reading) return;
     sending.current = true;
-    try { await analyzeClientMessage(clientMessage, active, { openrouter, google }, crypto.randomUUID()); }
+    const files = attachments.files;
+    setLastAnalysisWasImage(files.length > 0);
+    const sentAt = Date.now();
+    attachments.clear();
+    try { await analyzeClientMessage(clientMessage.trim() || DEFAULT_VISION_QUESTION, active, {
+      openrouter: { clearConversation: openrouter.clearConversation, sendText: (text, turnId) => openrouter.sendText(text, turnId, sentAt, files) },
+      google: { clearConversation: google.clearConversation, sendText: (text, turnId) => google.sendText(text, turnId, sentAt, files) },
+    }, crypto.randomUUID()); }
     finally { sending.current = false; }
   }
 
   return <section className="analysis-workspace" aria-labelledby="analysis-title">
-    <h2 id="analysis-title">Analiza wiadomości Studio NovaMAX</h2>
-    <p className="subtitle">Wklej wiadomość klienta. Otrzymasz kategorię, priorytet i szkic odpowiedzi.</p>
+    <h2 id="analysis-title">{visionView ? "Analiza obrazu — Vision" : "Analiza wiadomości Studio NovaMAX"}</h2>
+    <p className="subtitle">{visionView ? "Dodaj zdjęcie lub grafikę. Otrzymasz konkretny opis widocznych elementów, napisów i kompozycji." : "Wklej wiadomość klienta lub dodaj obraz do analizy."}</p>
     <form className="analysis-form" onSubmit={(event) => void analyze(event)}>
-      <label htmlFor="analysis-client-message">Wiadomość klienta</label>
-      <textarea id="analysis-client-message" rows={7} value={clientMessage} onChange={(event) => setClientMessage(event.target.value)} onPaste={(event) => pasteMessage(event, setClientMessage)} disabled={busy} placeholder="Wklej wiadomość klienta…" />
+      <label htmlFor="analysis-client-message">{visionView ? "Pytanie do obrazu (opcjonalnie)" : "Wiadomość klienta"}</label>
+      <textarea id="analysis-client-message" rows={7} value={clientMessage} onChange={(event) => setClientMessage(event.target.value)} onPaste={(event) => { if (!attachments.paste(event)) pasteMessage(event, setClientMessage); }} disabled={busy} placeholder={visionView ? "Domyślnie: opis obrazu w trzech konkretnych punktach…" : "Wklej wiadomość klienta…"} />
+      <ImageAttachments attachments={attachments} disabled={busy} />
       <fieldset className="provider-toggles" disabled={busy}>
         <legend>Analizuj przez</legend>
         <label><input type="checkbox" checked={active.openrouter} disabled={!enabled.openrouter} onChange={(event) => setActive((previous) => ({ ...previous, openrouter: event.target.checked }))} /> OpenRouter</label>
         <label><input type="checkbox" checked={active.google} disabled={!enabled.google} onChange={(event) => setActive((previous) => ({ ...previous, google: event.target.checked }))} /> Gemini</label>
       </fieldset>
-      <button type="submit" disabled={busy || !activeCount || !clientMessage.trim()}>{busy ? "Analizowanie…" : "Analizuj wiadomość"}</button>
-    </form>
+      <div className="analysis-action-bar">
+        {modeButtons}
+      <button type="submit" disabled={busy || !activeCount || attachments.reading || (!clientMessage.trim() && !attachments.files.length)}>{busy ? "Analizowanie…" : attachments.files.length ? "Analizuj zdjęcie" : "Analizuj wiadomość"}</button>
     <div className="analysis-copy-controls">
-      <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes })} label="Kopiuj całość" />
+      <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes })} html={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes }, true)} label="Kopiuj całość" />
+      <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, true, { openrouter: openrouter.responseTimes, google: google.responseTimes })} html={formatCombinedConversation(openrouter.messages, google.messages, true, { openrouter: openrouter.responseTimes, google: google.responseTimes }, true)} label="Kopiuj całość z JSON" />
+      <button type="button" className="copy-button clear-chat-button" disabled={busy || (!openrouter.messages.length && !google.messages.length && !openrouter.error && !google.error)} onClick={() => { openrouter.clearConversation(); google.clearConversation(); setLastAnalysisWasImage(false); }}>Wyczyść</button>
     </div>
+      </div>
+    </form>
     {!activeCount && <p className="chat-feedback">Włącz przynajmniej jeden model.</p>}
     <div className="analysis-results" data-count={activeCount}>
       {([["openrouter", openrouter, "MAX · OpenRouter"], ["google", google, "MAX · Gemini"]] as const).filter(([provider]) => active[provider]).map(([provider, chat, title]) => {
         const reply = [...chat.messages].reverse().find((message) => message.role === "assistant");
         const result = reply && messageResult(reply);
+        const analyzedMessage = [...chat.messages].reverse().find((message) => message.role === "user");
+        const analyzedImages = analyzedMessage ? messageImageUrls(analyzedMessage) : [];
+        const isVisionResult = analyzedImages.length > 0;
         const preview = reply?.parts.find((part) => part.type === "data-chat-preview");
         const previewText = chat.isBusy && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         return <article className="chat-panel analysis-panel" key={provider} aria-label={`Analiza: ${title}`}>
           <PanelHeading title={title} modelName={modelNames[provider]} chat={chat} responseTime={reply ? chat.responseTimes[reply.id] : undefined}>
             <CopyButton text={result && reply ? formatMessage(reply, title, false, chat.responseTimes[reply.id]) : ""} />
+            <CopyButton text={result && reply ? formatMessage(reply, title, true, chat.responseTimes[reply.id]) : ""} label="Kopiuj z JSON" />
             <button type="button" className="copy-button" disabled={chat.isBusy || !chat.messages.length} onClick={chat.clearConversation}>Wyczyść</button>
           </PanelHeading>
           <div className="analysis-result-body" aria-live="polite" aria-busy={chat.isBusy}>
+            <div className="analyzed-image-list">{analyzedImages.map((url, index) => <AnalyzedImage key={`${analyzedMessage?.id}-${index}`} url={url} index={index} />)}</div>
             {result ? <>
-              <dl className="analysis-metadata">
+              {!isVisionResult && <dl className="analysis-metadata">
                 <div><dt>Kategoria</dt><dd>{result.category}</dd></div>
                 <div><dt>Priorytet</dt><dd>{result.priority}</dd></div>
                 <div><dt>Sprawdzenie</dt><dd>{result.needs_review ? "Wymagane" : "Niewymagane"}</dd></div>
-              </dl>
-              <h3>Szkic odpowiedzi</h3><p className="analysis-draft">{result.draft}</p>
-              <p className="message-metadata">To nadal szkic, także gdy sprawdzenie nie jest wymagane.</p>
+              </dl>}
+              <h3>{isVisionResult ? "Opis zdjęcia" : "Szkic odpowiedzi"}</h3><p className="analysis-draft">{result.draft}</p>
+              {!isVisionResult && <p className="message-metadata">To nadal szkic, także gdy sprawdzenie nie jest wymagane.</p>}
+              {reply && <ActualModel message={reply} />}
               {reply && <UsedTools message={reply} />}
               {reply && <Sources message={reply} />}
+              <div className="message-json message-metadata"><details><summary>JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details><CopyButton text={JSON.stringify(result, null, 2)} /></div>
             </> : chat.isBusy ? <><p>MAX myśli… sprawdza wiadomość…</p><p className="analysis-draft">{previewText}</p><small>Wynik w trakcie sprawdzania.</small></>
               : !chat.error && <p className="message-metadata">Tutaj pojawi się wynik analizy.</p>}
             {chat.error && <div className="chat-feedback chat-error chat-retry" role="alert"><span>{chat.error.message.startsWith("MAX:") ? chat.error.message : "Analiza została przerwana lub wystąpił błąd dostawcy."}</span><button type="button" className="copy-button" disabled={chat.isBusy} onClick={() => void chat.retryLastRequest()}>Ponów</button></div>}
@@ -230,7 +283,60 @@ function AnalysisWorkspace({ active, enabled, modelNames, setActive, onBusyChang
   </section>;
 }
 
-function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel, onSendText }: {
+function GeneratorPicture({ picture, onRemove, onDescription }: { picture: UIMessage; onRemove: () => void; onDescription: (provider: Provider, reply: UIMessage) => void }) {
+  const images = messageImageUrls(picture);
+  const generated = picture.parts.find((part) => part.type === "data-generated-image");
+  const prompt = generated && "data" in generated && generated.data && typeof generated.data === "object" && "prompt" in generated.data && typeof generated.data.prompt === "string" ? generated.data.prompt : clientMessageText(picture).replace(/^Opis:\s*/i, "");
+  const effectivePrompt = generated && "data" in generated && generated.data && typeof generated.data === "object" && "effectivePrompt" in generated.data && typeof generated.data.effectivePrompt === "string" ? generated.data.effectivePrompt : undefined;
+  const openrouter = useMaxChat("openrouter", "chat", `generator-vision-openrouter-${picture.id}`, undefined, (reply) => onDescription("openrouter", reply));
+  const google = useMaxChat("google", "chat", `generator-vision-google-${picture.id}`, undefined, (reply) => onDescription("google", reply));
+  const [preparing, setPreparing] = useState(false);
+  const [error, setError] = useState("");
+  const preparingRef = useRef(false);
+  const busy = preparing || openrouter.isBusy || google.isBusy;
+  useEffect(() => () => { void openrouter.stop(); void google.stop(); }, [openrouter.stop, google.stop]);
+  async function describe(provider: Provider) {
+    if (busy || preparingRef.current || !images[0]) return;
+    preparingRef.current = true; setPreparing(true); setError("");
+    try {
+      const blob = await (await fetch(images[0])).blob();
+      const file = await prepareImagePart(new File([blob], "wygenerowany-obraz", { type: blob.type }));
+      const chat = provider === "openrouter" ? openrouter : google;
+      chat.clearConversation();
+      await chat.sendText(DEFAULT_VISION_QUESTION, undefined, Date.now(), [file]);
+    } catch (error) { setError(error instanceof Error ? error.message : "Nie udało się opisać obrazu."); }
+    finally { preparingRef.current = false; setPreparing(false); }
+  }
+  const text = formatMessage(picture, "Generator");
+  return <article className="chat-panel generator-result">
+    <p>Polecenie: {prompt}</p>
+    {images.map((url, index) => <figure className="message-image-wrap" key={index}>
+      <img className="generated-image" src={url} alt={prompt} />
+      <div className="generator-actions"><CopyButton text={text} html={formatMessageHtml(picture, "Generator")} imageUrl={images.length === 1 ? url : undefined} /><CopyButton text="" imageUrl={url} imageOnly label="Kopiuj obraz" /><SaveImageButton imageUrl={url} description={prompt} label="Pobierz" /><button type="button" className="copy-button" onClick={onRemove}>Usuń</button></div>
+    </figure>)}
+    <ActualModel message={picture} />
+    {effectivePrompt && <details className="message-metadata image-effective-prompt"><summary>Polecenie wysłane do generatora — styl MAX</summary><pre>{effectivePrompt}</pre><CopyButton text={effectivePrompt} /></details>}
+    <div className="generator-actions"><button type="button" className="copy-button" disabled={busy} onClick={() => void describe("openrouter")}>Opisz — OpenRouter</button><button type="button" className="copy-button" disabled={busy} onClick={() => void describe("google")}>Opisz — Gemini</button></div>
+    {error && <p className="questions-error" role="alert">{error}</p>}
+    {busy && <p className="message-metadata" role="status">Analizuję obraz…</p>}
+    {([["openrouter", openrouter, "OpenRouter"], ["google", google, "Gemini"]] as const).map(([provider, chat, title]) => {
+      const reply = [...chat.messages].reverse().find((message) => message.role === "assistant");
+      const result = reply && messageResult(reply);
+      const saved = picture.parts.find((part) => part.type === "data-vision-description" && part.data && typeof part.data === "object" && "provider" in part.data && part.data.provider === provider);
+      const savedData = saved && "data" in saved && saved.data && typeof saved.data === "object" ? saved.data as Record<string, unknown> : undefined;
+      const draft = result?.draft ?? (typeof savedData?.draft === "string" ? savedData.draft : "");
+      if (!draft && !chat.error) return null;
+      return <div className="generator-vision-result" key={provider}>
+        <h3>Opis zdjęcia — {title}</h3>
+        {draft && <p>{draft}</p>}
+        {result && reply ? <><ActualModel message={reply} /><CopyButton text={formatMessage(reply, title)} /></> : draft && <small className="message-metadata">Model: {typeof savedData?.modelId === "string" ? savedData.modelId : "dostawca nie potwierdził identyfikatora"}</small>}
+        {chat.error && <p className="questions-error" role="alert">{chat.error.message}</p>}
+      </div>;
+    })}
+  </article>;
+}
+
+function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel, onSendText, generating, generationError }: {
   chat: MaxChat;
   title: string;
   modelName?: string;
@@ -238,9 +344,12 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
   dueling: boolean;
   canDuel: boolean;
   onStartDuel: (text: string) => boolean;
-  onSendText: (text: string) => Promise<void>;
+  onSendText: (text: string, files: FileUIPart[]) => Promise<void>;
+  generating: boolean;
+  generationError: string;
 }) {
   const [draft, setDraft] = useState("");
+  const attachments = useImageAttachments();
   const conversationRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const area = conversationRef.current;
@@ -249,25 +358,31 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft.trim() || chat.isBusy || dueling) return;
-    void onSendText(draft.trim());
+    if ((!draft.trim() && !attachments.files.length) || chat.isBusy || dueling || generating || attachments.reading) return;
+    void onSendText(draft.trim(), attachments.files);
     setDraft("");
+    attachments.clear();
   }
 
   return <div className="chat-panel">
     <PanelHeading title={title} modelName={modelName} chat={chat}>
-      <CopyButton text={formatConversation(chat.messages, title, false, chat.responseTimes)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true, chat.responseTimes)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button>
+      <CopyButton text={formatConversation(chat.messages, title, false, chat.responseTimes)} html={formatConversation(chat.messages, title, false, chat.responseTimes, true)} label="Kopiuj czat" /><CopyButton text={formatConversation(chat.messages, title, true, chat.responseTimes)} html={formatConversation(chat.messages, title, true, chat.responseTimes, true)} label="Kopiuj czat z JSON" /><button type="button" className="copy-button clear-chat-button" disabled={chat.isBusy || dueling || generating || (!chat.messages.length && !chat.error)} aria-label={`Wyczyść ${title}`} onClick={() => { if (!chat.isBusy && !dueling) chat.clearConversation(); }}>Wyczyść</button>
     </PanelHeading>
     <section ref={conversationRef} className="conversation" role="log" aria-label={`Rozmowa: ${title}`} aria-live="polite" aria-busy={chat.isBusy}>
       {chat.messages.map((item) => {
         const result = messageResult(item);
+        const images = messageImageUrls(item);
+        const canCopy = Boolean(clientMessageText(item).trim() || images.length);
+        const singleImage = images.length === 1 ? images[0] : undefined;
         const isAnalysis = item.parts.some((part) => part.type === "data-chat-mode" && part.data === "analysis");
         const preview = item.parts.find((part) => part.type === "data-chat-preview");
         const previewText = chat.isBusy && item === chat.messages.at(-1) && preview && "data" in preview && typeof preview.data === "string" ? preview.data : "";
         const presentation = item.role === "assistant" && !result ? assistantPresentation(messageText(item)) : { text: messageText(item), category: undefined, review: undefined };
         return <div className="conversation-entry" key={item.id}><div className={`message message-${item.role}`}>
-          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}{item.role === "assistant" && <ResponseTime milliseconds={chat.responseTimes[item.id]} />}</span><div className="message-copy-controls"><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, false, chat.responseTimes[item.id]) : ""} /><CopyButton text={clientMessageText(item).trim() ? formatMessage(item, title, true, chat.responseTimes[item.id]) : ""} label="Kopiuj z JSON" /></div></div>
+          <div className="message-heading"><span className="message-author">{item.role === "user" ? "Ty" : title}{item.role === "assistant" && <ResponseTime milliseconds={chat.responseTimes[item.id]} />}</span><div className="message-copy-controls"><CopyButton text={canCopy ? formatMessage(item, title, false, chat.responseTimes[item.id]) : ""} html={canCopy ? formatMessageHtml(item, title, false, chat.responseTimes[item.id]) : undefined} imageUrl={singleImage} /><CopyButton text={canCopy ? formatMessage(item, title, true, chat.responseTimes[item.id]) : ""} html={canCopy ? formatMessageHtml(item, title, true, chat.responseTimes[item.id]) : undefined} imageUrl={singleImage} label="Kopiuj z JSON" /></div></div>
           {isAnalysis && <small className="message-metadata">Szkic odpowiedzi</small>}
+          {item.role === "user" && images.map((url, index) => <AnalyzedImage key={index} url={url} index={index} />)}
+          {item.role === "assistant" && <ToolBadges message={item} />}
           <span>{presentation.text || previewText}</span>
           {!chat.isBusy && !result && preview && <small className="message-metadata">Odpowiedź nie została zatwierdzona.</small>}
           {!result && previewText && <small className="message-metadata">Odpowiedź w trakcie sprawdzania…</small>}
@@ -275,6 +390,8 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
             ? `Kategoria: ${result.category} · Priorytet: ${result.priority} · Sprawdzenie: ${result.needs_review ? "wymagane" : "niewymagane"} — nadal szkic`
             : `${result.category} · ${result.priority} · ${String(result.needs_review)}`}</small>
             : (presentation.category || presentation.review) && <small className="message-metadata">{[presentation.category, presentation.review].filter(Boolean).join(" · ")}</small>}
+          {item.role === "assistant" && images.map((url, index) => <figure className="message-image-wrap" key={index}><img className="generated-image" src={url} alt="Wygenerowany obraz" /><CopyButton text="" imageUrl={url} imageOnly label="Kopiuj obraz" /><SaveImageButton imageUrl={url} description={clientMessageText(item)} />{(() => { const part = item.parts.find((part) => part.type === "data-generated-image" && part.data && typeof part.data === "object" && "imageUrl" in part.data && part.data.imageUrl === url); const data = part && "data" in part ? part.data as Record<string, unknown> : undefined; return data && <figcaption className="message-metadata">Model obrazu: {typeof data.modelId === "string" ? data.modelId : "dostawca nie podał"}</figcaption>; })()}</figure>)}
+          {item.role === "assistant" && <ActualModel message={item} />}
           {item.role === "assistant" && <UsedTools message={item} />}
           {item.role === "assistant" && clientMessageText(item).trim() && <Sources message={item} />}
           {result && <div className="message-json message-metadata"><details><summary>JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details><CopyButton text={JSON.stringify(result, null, 2)} /></div>}
@@ -283,23 +400,27 @@ function ChatPanel({ chat, title, modelName, mode, dueling, canDuel, onStartDuel
       })}
     </section>
     <div className="panel-feedback">
+      {generating && <p className="chat-feedback" role="status">Generuję obraz…</p>}
+      {generationError && <p className="chat-feedback chat-error" role="alert">{generationError}</p>}
       {chat.isBusy && <p className="chat-feedback" role="status">{chat.status === "submitted" ? "MAX budzi się w krypcie…" : "MAX pisze z zaświatów…"}</p>}
-      {chat.error && <div className="chat-feedback chat-error chat-retry" role="alert"><span>{chat.error.message.startsWith("MAX:") ? chat.error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</span><button type="button" className="copy-button" disabled={chat.isBusy || dueling || !chat.messages.some((message) => message.role === "user")} onClick={() => { if (!dueling) void chat.retryLastRequest(); }}>Ponów</button></div>}
+      {chat.error && <div className="chat-feedback chat-error chat-retry" role="alert"><span>{chat.error.message.startsWith("MAX:") ? chat.error.message : "Nie udało się połączyć z MAX-em. Sprawdź połączenie i spróbuj ponownie."}</span><button type="button" className="copy-button" disabled={chat.isBusy || dueling || generating || !chat.messages.some((message) => message.role === "user")} onClick={() => { if (!dueling) void chat.retryLastRequest(); }}>Ponów</button></div>}
     </div>
     <form onSubmit={handleSubmit}>
       <label className="sr-only" htmlFor={`draft-${chat.id}`}>Wiadomość do {title}</label>
-      <input id={`draft-${chat.id}`} placeholder="Napisz do tego MAX-a…" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => pasteMessage(event, setDraft)} disabled={chat.isBusy || dueling} autoComplete="off" />
+      <input id={`draft-${chat.id}`} placeholder="Napisz do tego MAX-a…" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (!attachments.paste(event)) pasteMessage(event, setDraft); }} disabled={chat.isBusy || dueling || generating} autoComplete="off" />
       <div className="chat-actions">
-        <button type="submit" disabled={!draft.trim() || chat.isBusy || dueling}>{mode === "analysis" ? "Analizuj" : "Ślij"}</button>
-        <button type="button" className="secondary-button" disabled={mode === "analysis" || !draft.trim() || !canDuel || dueling} title="Zaczyna ten MAX. Oba czaty muszą być aktywne i gotowe." onClick={() => {
+        <button type="submit" disabled={(!draft.trim() && !attachments.files.length) || chat.isBusy || dueling || generating || attachments.reading}>{mode === "analysis" ? "Analizuj" : "Ślij"}</button>
+        <button type="button" className="secondary-button" disabled={mode === "analysis" || !draft.trim() || !canDuel || dueling || attachments.reading || attachments.files.length > 0} title="Zaczyna ten MAX. Oba czaty muszą być aktywne i gotowe." onClick={() => {
           if (onStartDuel(draft.trim())) setDraft("");
         }}>Pojedynek!</button>
       </div>
+      <ImageAttachments attachments={attachments} disabled={chat.isBusy || dueling || generating} />
+
     </form>
   </div>;
 }
 
-function QuestionPicker({ questions, value, onChange, disabled, inputRef }: { questions: string[]; value: string; onChange: (value: string) => void; disabled: boolean; inputRef: RefObject<HTMLInputElement | null> }) {
+function QuestionPicker({ questions, value, onChange, disabled, inputRef, onPaste }: { questions: string[]; value: string; onChange: (value: string) => void; disabled: boolean; inputRef: RefObject<HTMLInputElement | null>; onPaste: (event: ClipboardEvent<HTMLInputElement>) => void }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -320,7 +441,7 @@ function QuestionPicker({ questions, value, onChange, disabled, inputRef }: { qu
   return <div ref={root} className="question-combo" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
     <input ref={inputRef} id="shared-question" role="combobox" aria-expanded={expanded} aria-controls="test-questions" aria-autocomplete="list" aria-activedescendant={expanded && highlighted >= 0 ? `test-question-${highlighted}` : undefined}
       value={value} onFocus={() => { setOpen(true); setFilter(false); }} onChange={(event) => { onChange(event.target.value); setFilter(true); setOpen(true); setHighlighted(-1); }}
-      onPaste={(event) => pasteMessage(event, onChange)}
+      onPaste={onPaste}
       onKeyDown={(event) => {
         if (event.key === "Escape") { setOpen(false); setHighlighted(-1); }
         if ((event.key === "ArrowDown" || event.key === "ArrowUp") && questions.length) {
@@ -334,7 +455,7 @@ function QuestionPicker({ questions, value, onChange, disabled, inputRef }: { qu
           else setOpen(false);
         }
       }}
-      placeholder={questions.length ? "Wybierz pytanie lub wpisz wiadomość…" : "Wpisz wiadomość do zaznaczonych czatów…"} disabled={disabled} autoComplete="off" />
+      placeholder={questions.length ? "Wpisz wiadomość lub wybierz z listy propozycji" : "Wpisz wiadomość do zaznaczonych czatów…"} disabled={disabled} autoComplete="off" />
     {value && <button type="button" className="clear-question" aria-label="Wyczyść wiadomość" title="Wyczyść" disabled={disabled} onClick={() => { onChange(""); setFilter(false); setHighlighted(-1); inputRef.current?.focus(); }}>×</button>}
     {questions.length > 0 && <button type="button" className="toggle-questions" aria-label={expanded ? "Zwiń pytania" : "Rozwiń pytania"} aria-expanded={expanded} aria-controls="test-questions" disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => { setOpen(!expanded); setFilter(false); setHighlighted(-1); }}>▾</button>}
     {expanded && <ul id="test-questions" className="question-options" role="listbox" aria-label="Pytania testowe">
@@ -345,7 +466,14 @@ function QuestionPicker({ questions, value, onChange, disabled, inputRef }: { qu
 }
 
 export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5, appInfo, testQuestions = { questions: [], invalid: false } }: { enabled: EnabledProviders; modelNames?: ModelNames; roundsPerBatch?: number; appInfo: AppInfo; testQuestions?: { questions: string[]; invalid: boolean } }) {
-  const [mode, setMode] = useState<"chat" | "analysis">("chat");
+  const [mode, setMode] = useState<"chat" | "analysis" | "generator">("chat");
+  const [generatingImage, setGeneratingImage] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [generatorPrompt, setGeneratorPrompt] = useState("");
+  const [generatedPictures, setGeneratedPictures] = useState<UIMessage[]>([]);
+  const imageGenerating = useRef(false);
+  const archivedAgentImages = useRef(new Set<string>());
+  const sharedAttachments = useImageAttachments();
   const [location, setLocation] = useState<WeatherLocation>();
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState("");
@@ -353,6 +481,25 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
   const [customWeatherCity, setCustomWeatherCity] = useState("");
   const openrouter = useMaxChat("openrouter", "chat", "openrouter", location);
   const google = useMaxChat("google", "chat", "google", location);
+  useEffect(() => {
+    const pictures = [openrouter.messages, google.messages].flatMap((messages) => messages.flatMap((message) => message.parts.flatMap((part, index) => {
+      if (part.type !== "data-generated-image" || !part.data || typeof part.data !== "object") return [];
+      const data = part.data as Record<string, unknown>;
+      const id = `agent-${message.id}-${index}`;
+      if (typeof data.imageUrl !== "string" || archivedAgentImages.current.has(id)) return [];
+      archivedAgentImages.current.add(id);
+      return [{ id, role: "assistant" as const, parts: [
+        { type: "text" as const, text: `Opis: ${typeof data.prompt === "string" ? data.prompt : "Wygenerowana grafika"}` },
+        part,
+        { type: "data-response-model" as const, data: { modelId: typeof data.modelId === "string" ? data.modelId : null } },
+      ] }];
+    })));
+    if (pictures.length) setGeneratedPictures((previous) => {
+      const ids = new Set(previous.map((picture) => picture.id));
+      const fresh = pictures.filter((picture) => !ids.has(picture.id));
+      return fresh.length ? [...fresh, ...previous] : previous;
+    });
+  }, [openrouter.messages, google.messages]);
   function requestLocation() {
     if (locating) return;
     setLocationError("");
@@ -384,9 +531,9 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
   const [turns, setTurns] = useState(0);
   const [duelError, setDuelError] = useState("");
   const duelController = useRef<AbortController | null>(null);
-  const busy = openrouter.isBusy || google.isBusy;
+  const busy = openrouter.isBusy || google.isBusy || generatingImage;
   const activeCount = Number(active.openrouter) + Number(active.google);
-  const sharedDisabled = busy || dueling || sendingShared || activeCount === 0;
+  const sharedDisabled = busy || dueling || sendingShared || sharedAttachments.reading || activeCount === 0;
   const weatherRequested = Boolean(pendingWeather);
 
   function clearAllConversations() {
@@ -395,10 +542,34 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
     google.clearConversation();
     setPendingWeather(null);
     setCustomWeatherCity("");
+    sharedAttachments.clear();
+    setImageError("");
     setTurns(0);
     setDuelError("");
     setBatchQuestion(false);
     setPaused(false);
+  }
+
+  async function generatePicture(value: string) {
+    if (busy || dueling || analysisBusy || imageGenerating.current) return;
+    const prompt = value.replace(/^\s*Wygeneruj obraz\s*:\s*/i, "").trim();
+    setGeneratorPrompt(prompt);
+    if (!prompt || prompt.length > 500) { setImageError("Opis obrazu musi mieć od 1 do 500 znaków."); return; }
+    imageGenerating.current = true; setGeneratingImage(true); setImageError("");
+    try {
+      const response = await authenticatedFetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
+      if (!response.ok) throw Error(await response.text());
+      const data = await response.json();
+      if (typeof data.imageUrl !== "string" || !/^data:image\/(?:png|jpeg|webp);base64,/.test(data.imageUrl)) throw Error("MAX: Serwer nie zwrócił poprawnego obrazu.");
+      const picture: UIMessage = { id: crypto.randomUUID(), role: "assistant", parts: [
+        { type: "text", text: `Opis: ${prompt}` },
+        { type: "data-generated-image", data: { imageUrl: data.imageUrl, prompt, effectivePrompt: typeof data.effectivePrompt === "string" ? data.effectivePrompt : null, brandStyle: typeof data.brandStyle === "string" ? data.brandStyle : null } },
+        { type: "data-response-model", data: { modelId: typeof data.modelId === "string" ? data.modelId : null } },
+      ] };
+      setGeneratedPictures((previous) => [picture, ...previous]);
+      setSharedDraft("");
+    } catch (error) { setImageError(error instanceof Error ? error.message : "MAX: Nie udało się wygenerować obrazu."); }
+    finally { imageGenerating.current = false; setGeneratingImage(false); }
   }
 
   async function sendShared(event: FormEvent<HTMLFormElement>) {
@@ -406,7 +577,7 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
     await sendSharedText(sharedDraft);
   }
 
-  async function submitToChats(text: string, targets: EnabledProviders) {
+  async function submitToChats(text: string, targets: EnabledProviders, files: FileUIPart[] = []) {
     if (sharedDisabled || sharedSending.current) return;
     const selected = { openrouter: targets.openrouter && active.openrouter, google: targets.google && active.google };
     if (!selected.openrouter && !selected.google) return;
@@ -416,16 +587,18 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
     const sentAt = Date.now();
     setPendingWeather(null);
     setSharedDraft("");
+    sharedAttachments.clear();
     try {
       await broadcastMessage(text, selected, {
-        openrouter: (value) => openrouter.sendText(value, sharedTurnId, sentAt),
-        google: (value) => google.sendText(value, sharedTurnId, sentAt),
+        openrouter: (value) => openrouter.sendText(value, sharedTurnId, sentAt, files),
+        google: (value) => google.sendText(value, sharedTurnId, sentAt, files),
       });
     } finally { sharedSending.current = false; setSendingShared(false); }
   }
 
   async function sendSharedText(value: string) {
-    if (!value.trim() || sharedDisabled || sharedSending.current) return;
+    if ((!value.trim() && !sharedAttachments.files.length) || sharedDisabled || sharedSending.current) return;
+    if (sharedAttachments.files.length) { await submitToChats(value.trim() || "Opisz załączone zdjęcie.", active, sharedAttachments.files); return; }
     if (pendingWeather && /^(?:Radom|Warszawa|Zakopane|Gdańsk)$/i.test(value.trim())) { await chooseWeatherCity(value); return; }
     await sendWithWeatherLocation(value, Boolean(location), (question) => {
       setPendingWeather({ question, targets: { ...active } });
@@ -433,8 +606,9 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
     }, (question) => submitToChats(question, active));
   }
 
-  async function sendPanelText(provider: Provider, value: string) {
+  async function sendPanelText(provider: Provider, value: string, files: FileUIPart[] = []) {
     if ((provider === "openrouter" ? openrouter : google).isBusy || dueling || sharedSending.current) return;
+    if (files.length) { setPendingWeather(null); await (provider === "openrouter" ? openrouter : google).sendText(value.trim() || "Opisz załączone zdjęcie.", undefined, Date.now(), files); return; }
     await sendWithWeatherLocation(value, Boolean(location), (question) => {
       setPendingWeather({ question, targets: { openrouter: provider === "openrouter", google: provider === "google" } });
     }, async (question) => {
@@ -546,6 +720,7 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
   const modeButtons = <div className="chat-mode-buttons" role="group" aria-label="Tryb pracy">
     <button type="button" className="chat-mode-button" aria-pressed={mode === "chat"} disabled={busy || dueling || sendingShared || analysisBusy} onClick={() => setMode("chat")}>Zwykły czat</button>
     <button type="button" className="chat-mode-button" aria-pressed={mode === "analysis"} disabled={busy || dueling || sendingShared || analysisBusy} onClick={() => setMode("analysis")}>Analiza wiadomości</button>
+    <button type="button" className="chat-mode-button" aria-pressed={mode === "generator"} disabled={busy || dueling || sendingShared || analysisBusy} onClick={() => setMode("generator")}>Generator</button>
   </div>;
 
   return <>
@@ -576,9 +751,37 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
           <button type="submit" className="secondary-button" disabled={sharedDisabled || analysisBusy || !customWeatherCity.trim()}>Sprawdź pogodę</button>
         </form>
       </div>}
+      <section hidden={mode !== "generator"} className="generator-workspace" aria-labelledby="generator-title">
+        <h2 id="generator-title">Generator grafiki</h2>
+        <p className="message-metadata">Styl marki MAX · stosowany automatycznie</p>
+        <form className="analysis-form" onSubmit={(event) => { event.preventDefault(); void generatePicture(generatorPrompt); }}>
+          <label htmlFor="generator-prompt">Opis obrazu</label>
+          <textarea id="generator-prompt" rows={2} maxLength={500} value={generatorPrompt} disabled={generatingImage} onChange={(event) => setGeneratorPrompt(event.target.value)} placeholder="Opisz grafikę, którą chcesz wygenerować…" />
+          <small className="message-metadata">{generatorPrompt.length}/500 znaków</small>
+          <div className="image-prompt-suggestions" aria-label="Podpowiedzi opisów grafiki">{imagePrompts.prompts.map((item) => <button key={item.label} type="button" className="copy-button" disabled={generatingImage} onClick={() => setGeneratorPrompt(item.prompt)}>{item.label}</button>)}</div>
+          <div className="generator-actions">
+            <button type="submit" className="generate-image-button" disabled={busy || dueling || analysisBusy || !generatorPrompt.trim()}>{generatingImage ? "Generuję obraz…" : "Generuj"}</button>
+            <button type="button" className="copy-button" disabled={generatingImage} onClick={() => setGeneratorPrompt((testQuestions.questions.find((question) => /^Wygeneruj obraz:/i.test(question)) ?? "Wygeneruj obraz: Artystyczna czaszka wampira, dwa kolory, czarne tło").replace(/^Wygeneruj obraz:\s*/i, ""))}>Wstaw przykład</button>
+          </div>
+          {imageError && <p className="questions-error" role="alert">{imageError}</p>}
+        </form>
+        <div className="generator-toolbar">
+          <div className="generator-actions">{generatedPictures.length > 0 && <>
+            <CopyButton text={formatConversation(generatedPictures, "Generator")} html={formatConversation(generatedPictures, "Generator", false, {}, true)} label="Kopiuj całość" />
+            <button type="button" className="copy-button" disabled={generatingImage} onClick={() => setGeneratedPictures([])}>Wyczyść</button>
+          </>}</div>
+          {modeButtons}
+        </div>
+        <div className="generator-results" role="log" aria-label="Wygenerowane grafiki" aria-busy={generatingImage}>
+          {generatedPictures.map((picture) => <GeneratorPicture key={picture.id} picture={picture} onRemove={() => setGeneratedPictures((previous) => previous.filter((item) => item.id !== picture.id))} onDescription={(provider, reply) => {
+            const result = messageResult(reply);
+            if (!result) return;
+            setGeneratedPictures((previous) => previous.map((item) => item.id !== picture.id ? item : { ...item, parts: [...item.parts.filter((part) => !(part.type === "data-vision-description" && part.data && typeof part.data === "object" && "provider" in part.data && part.data.provider === provider)), { type: "data-vision-description", data: { provider, draft: result.draft, modelId: messageResponseModel(reply) ?? null } }] }));
+          }} />)}
+        </div>
+      </section>
       <div hidden={mode !== "analysis"}>
-        <AnalysisWorkspace active={active} enabled={enabled} modelNames={modelNames} setActive={setActive} onBusyChange={setAnalysisBusy} location={location} />
-        <div className="duel-toolbar mode-toolbar">{modeButtons}</div>
+        <AnalysisWorkspace active={active} enabled={enabled} modelNames={modelNames} setActive={setActive} onBusyChange={setAnalysisBusy} location={location} modeButtons={modeButtons} />
       </div>
       <div hidden={mode !== "chat"}>
       <div className="arena-controls">
@@ -589,19 +792,22 @@ export default function ChatArena({ enabled, modelNames = {}, roundsPerBatch = 5
         </fieldset>
         <form className="shared-composer" onSubmit={(event) => void sendShared(event)}>
           <label className="sr-only" htmlFor="shared-question">Wiadomość do zaznaczonych czatów</label>
-          <QuestionPicker questions={testQuestions.questions} value={sharedDraft} onChange={setSharedDraft} disabled={sharedDisabled} inputRef={sharedInput} />
-          <button type="submit" disabled={sharedDisabled || !sharedDraft.trim()}>{sendingShared ? "Czekaj…" : mode === "analysis" ? "Analizuj" : "Wyślij"}</button>
+          <QuestionPicker questions={testQuestions.questions} value={sharedDraft} onChange={setSharedDraft} disabled={sharedDisabled} inputRef={sharedInput} onPaste={(event) => { if (!sharedAttachments.paste(event)) pasteMessage(event, setSharedDraft); }} />
+          <button type="submit" disabled={sharedDisabled || (!sharedDraft.trim() && !sharedAttachments.files.length)}>{sendingShared ? "Czekaj…" : mode === "analysis" ? "Analizuj" : "Wyślij"}</button>
+
+          <ImageAttachments attachments={sharedAttachments} disabled={sharedDisabled} />
         </form>
         <div className="copy-clear-controls">
-          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes })} label="Kopiuj całość" />
-          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, true, { openrouter: openrouter.responseTimes, google: google.responseTimes })} label="Kopiuj całość z JSON" />
+          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes })} html={formatCombinedConversation(openrouter.messages, google.messages, false, { openrouter: openrouter.responseTimes, google: google.responseTimes }, true)} label="Kopiuj całość" />
+          <CopyButton text={formatCombinedConversation(openrouter.messages, google.messages, true, { openrouter: openrouter.responseTimes, google: google.responseTimes })} html={formatCombinedConversation(openrouter.messages, google.messages, true, { openrouter: openrouter.responseTimes, google: google.responseTimes }, true)} label="Kopiuj całość z JSON" />
           <button type="button" className="copy-button clear-chat-button" disabled={busy || dueling || sendingShared || (!openrouter.messages.length && !google.messages.length && !openrouter.error && !google.error && !turns && !duelError)} onClick={clearAllConversations}>Wyczyść całość</button>
         </div>
+        {imageError && <p className="questions-error" role="alert">{imageError}</p>}
         {testQuestions.invalid && <p className="questions-error" role="alert">Nie można odczytać listy z config/test-questions.json. Sprawdź plik i format JSON. Nadal możesz wpisać własną wiadomość.</p>}
       </div>
       <div className="chat-grid" data-count={activeCount} style={{ "--chat-height": `${chatHeight}px` } as CSSProperties}>
-        {active.openrouter && <ChatPanel onSendText={(text) => sendPanelText("openrouter", text)} chat={openrouter} title="MAX · OpenRouter" modelName={modelNames.openrouter} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
-        {active.google && <ChatPanel onSendText={(text) => sendPanelText("google", text)} chat={google} title="MAX · Gemini" modelName={modelNames.google} mode={mode} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
+        {active.openrouter && <ChatPanel generating={generatingImage} generationError={imageError} onSendText={(text, files) => sendPanelText("openrouter", text, files)} chat={openrouter} title="MAX · OpenRouter" modelName={modelNames.openrouter} mode={mode === "analysis" ? "analysis" : "chat"} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("openrouter", text)} />}
+        {active.google && <ChatPanel generating={generatingImage} generationError={imageError} onSendText={(text, files) => sendPanelText("google", text, files)} chat={google} title="MAX · Gemini" modelName={modelNames.google} mode={mode === "analysis" ? "analysis" : "chat"} dueling={dueling} canDuel={activeCount === 2 && !busy && !sendingShared} onStartDuel={(text) => startDuel("google", text)} />}
       </div>
       <div className="duel-controls">
         <p className="duel-status" role="status">{batchQuestion ? `Ukończono ${Math.floor(turns / 2)} rund. Czy chcesz kontynuować przez kolejne ${roundsPerBatch} rund?` : dueling ? `${paused ? busy ? "Pauza po bieżącej odpowiedzi" : "Pojedynek wstrzymany" : "Pojedynek trwa"} · ukończone rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : activeCount === 0 ? "Włącz przynajmniej jeden czat powyżej." : activeCount === 1 ? "Tryb jednego czatu. Zaznacz drugi model, aby uruchomić pojedynek." : turns ? `Pojedynek zakończony · rundy: ${Math.floor(turns / 2)} · wypowiedzi: ${turns}` : `Wpisz temat i kliknij Pojedynek! Automatyczna pauza co ${roundsPerBatch} rund.`}</p>

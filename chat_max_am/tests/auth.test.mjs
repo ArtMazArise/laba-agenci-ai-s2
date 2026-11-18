@@ -1,3 +1,6 @@
+import { tool, jsonSchema } from "ai";
+import { loadResponseModelModule } from "./response-model-helper.mjs";
+import { loadImagesModule } from "./images-helper.mjs";
 import { loadTimingModule } from "./timing-helper.mjs";
 import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
@@ -18,7 +21,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   const env = { CHAT_PASSWORD: password, CHAT_MAX_ATTEMPTS: "3", SESSION_SECRET: secret, AUTH_STATE_DIR: directory, NODE_ENV: "test", ...overrides };
   let now = Date.now();
   class Clock extends Date { static now() { return now; } }
-  const context = vm.createContext({ performance, process: { env, cwd: () => directory }, Buffer, Response, Request, URL, Date: Clock, AbortSignal, setTimeout, clearTimeout });
+  const context = vm.createContext({ fetch: () => { throw Error("Unexpected network"); }, TextDecoder, TransformStream, atob, performance, process: { env, cwd: () => directory }, Buffer, Response, Request, Headers, URL, Date: Clock, AbortSignal, setTimeout, clearTimeout });
   const modules = new Map();
   let modelCalls = 0;
   const jokeCalls = [];
@@ -32,6 +35,8 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
     login: "../app/api/login/route.ts",
     logout: "../app/api/logout/route.ts",
     chat: "../app/api/chat/route.ts",
+    image: "../app/api/image/route.ts",
+    "@/lib/agent-tools": "../lib/agent-tools.ts",
   };
   class PreconditionFailed extends Error {}
   class MockAPICallError extends Error {
@@ -40,11 +45,20 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   }
   async function load(name) {
     if (modules.has(name)) return modules.get(name);
+    if (name === "@/app/api/image/route") return load("image");
     if (name === "./settings" || name === "@/lib/settings") {
       const settings = await loadSettingsModule(context);
       await settings.evaluate();
       modules.set(name, settings);
       return settings;
+    }
+    if (name === "@/lib/response-model") {
+      const module = await loadResponseModelModule(context); await module.evaluate(); return module;
+    }
+    if (name === "@/lib/chat-images") {
+      const images = await loadImagesModule(context);
+      await images.evaluate();
+      return images;
     }
     if (name === "@/lib/chat-timing") {
       const timing = await loadTimingModule(context);
@@ -87,13 +101,13 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       }).outputText, { context, identifier: name });
     } else {
-      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs", "wrapLanguageModel"]
+      const exports = name === "ai" ? ["APICallError", "convertToModelMessages", "streamText", "validateUIMessages", "generateText", "generateImage", "tool", "Output", "jsonSchema", "createUIMessageStream", "createUIMessageStreamResponse", "stepCountIs", "wrapLanguageModel"]
         : name === "@ai-sdk/google" ? ["createGoogleGenerativeAI"]
         : name === "@openrouter/ai-sdk-provider" ? ["createOpenRouter"] : null;
       if (!exports) throw Error(`Unexpected import: ${name}`);
       module = new vm.SyntheticModule(exports, function () {
         for (const key of exports) this.setExport(key,
-          key === "APICallError" ? MockAPICallError
+          key === "tool" ? tool : key === "jsonSchema" ? jsonSchema : key === "APICallError" ? MockAPICallError
           : key === "generateText" ? async (options) => {
             jokeCalls.push(options);
             if (env.TEST_JOKE_FAILURE === "429") throw new MockAPICallError(429);
@@ -118,6 +132,7 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
   const login = (await load("login")).namespace.POST;
   const logout = (await load("logout")).namespace.POST;
   const chat = (await load("chat")).namespace.POST;
+  const image = (await load("image")).namespace.POST;
   function request(route, body, cookie = "", origin = "http://localhost") {
     return new Request(`http://localhost/api/${route}`, { method: "POST", headers: { "content-type": "application/json", origin, cookie }, body: JSON.stringify(body) });
   }
@@ -126,6 +141,11 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
     login: (value, origin, previousJokeProvider) => login(request("login", { password: value, previousJokeProvider }, "", origin)),
     logout: (cookie) => logout(request("logout", {}, cookie)),
     chat: (cookie = "", provider = "openrouter", origin, mode = "chat") => chat(request("chat", { provider, mode, messages: [] }, cookie, origin)),
+    image: (cookie = "") => image(request("image", { prompt: "Test" }, cookie)),
+    imageTool: async (request) => {
+      const factory = (await load("@/lib/agent-tools")).namespace.createImageAgentTool;
+      return factory(request).execute({ prompt: "Test" }, { toolCallId: "test", messages: [], abortSignal: request.signal });
+    },
     advance: (milliseconds) => { now += milliseconds; },
   };
 }
@@ -414,4 +434,37 @@ test("OpenRouter false: pierwsze losowanie i następne próby wywołują wyłąc
     assert.ok(app.providerCalls.every((call) => call.provider === "google"));
     assert.ok(app.jokeCalls.every((call) => call.model.model === "mock-google-model"));
   }
+});
+
+
+test('nowy /api/image wymaga prawdziwej sesji i nie uruchamia modelu bez niej', async (t) => {
+  const app = await setup(t);
+  assert.equal((await app.image()).status, 401);
+  assert.equal(app.modelCalls(), 0);
+  assert.equal(app.providerCalls.length, 0);
+});
+
+
+test('narzędzie obrazów zachowuje prawdziwą ochronę pochodzenia i sesji: localhost i proxy Vercel', async (t) => {
+  const app = await setup(t);
+  const cookie = cookieOf(await app.login(password));
+  for (const [url, host, origin] of [
+    ['http://0.0.0.0:3000/api/agent', 'localhost:3000', 'http://localhost:3000'],
+    ['http://internal:3000/api/agent', 'max-example.vercel.app', 'https://max-example.vercel.app'],
+  ]) {
+    const make = (headers) => new Request(url, { method: 'POST', headers });
+    const accepted = await app.imageTool(make({ cookie, host, origin, 'sec-fetch-site': 'same-origin' }));
+    assert.equal(accepted.ok, false);
+    assert.match(accepted.error, /Brakuje OPENROUTER_API_KEY/); // Przeszło sesję i CSRF; bez klucza nie ma modelu.
+    const foreign = await app.imageTool(make({ cookie, host, origin: 'https://evil.example' }));
+    assert.match(foreign.error, /Żądanie musi pochodzić/);
+    const missingOrigin = await app.imageTool(make({ cookie, host }));
+    assert.match(missingOrigin.error, /Żądanie musi pochodzić/);
+    const noSession = await app.imageTool(make({ host, origin }));
+    assert.match(noSession.error, /Sesja wygasła|nie jesteś zalogowany/);
+    const crossSite = await app.imageTool(make({ cookie, host, origin, 'sec-fetch-site': 'cross-site' }));
+    assert.match(crossSite.error, /Żądanie musi pochodzić/);
+  }
+  assert.equal(app.modelCalls(), 0);
+  assert.equal(app.providerCalls.length, 0);
 });

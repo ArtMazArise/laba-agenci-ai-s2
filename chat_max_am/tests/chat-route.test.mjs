@@ -1,3 +1,5 @@
+import { loadResponseModelModule } from "./response-model-helper.mjs";
+import { loadImagesModule } from "./images-helper.mjs";
 import { loadTimingModule } from "./timing-helper.mjs";
 import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
@@ -24,10 +26,12 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   let streamError;
   let instant = Date.parse("2026-11-05T23:30:00Z");
   class TestDate extends Date { constructor() { super(instant); } }
-  const context = vm.createContext({ performance, Response, process: { env }, Date: TestDate });
+  const context = vm.createContext({ fetch: () => { throw Error("Unexpected network"); }, TextDecoder, TransformStream, atob, performance, Response, process: { env }, Date: TestDate });
   const settings = await loadSettingsModule(context);
   const publicTools = await loadPublicToolsModule(context);
   const timing = await loadTimingModule(context);
+  const images = await loadImagesModule(context);
+  const responseModel = await loadResponseModelModule(context);
   const schemaModule = new vm.SourceTextModule(ts.transpileModule(await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText, { context });
   await schemaModule.link(() => {});
   class MockAPIError extends Error {
@@ -91,6 +95,8 @@ async function setup(env = { OPENROUTER_API_KEY: "test-key", OPENROUTER_MODEL: "
   }, { context });
   const route = new vm.SourceTextModule(outputText, { context });
   await route.link((specifier) => {
+    if (specifier === "@/lib/response-model") return responseModel;
+    if (specifier === "@/lib/chat-images") return images;
     if (specifier === "@/lib/chat-timing") return timing;
     if (specifier === "@/lib/public-tools") return publicTools;
     if (specifier === "@/lib/settings") return settings;

@@ -66,12 +66,13 @@ export function createChatTiming(now: () => number = () => performance.now()) {
 
 
 export type ChatRequestDiagnostics = {
-  endpoint: "/api/chat";
+  endpoint: "/api/chat" | "/api/agent";
   provider: "openrouter" | "google";
   model: string;
   mode: "chat" | "analysis" | "duel";
   message: string;
   historyMessageCount: number;
+  images?: { filename: string; mediaType: string; sizeBytes: number }[];
   location: { latitude: number; longitude: number } | null;
   toolCalls: { attempt: number; step: number; name: string; input: Record<string, string | number | boolean | null>; effectiveInput: Record<string, string | number | boolean | null> }[];
 };

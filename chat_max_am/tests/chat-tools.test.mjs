@@ -369,7 +369,7 @@ test("włączona lista odczytuje prawdziwy plik z obiektem i pytaniem o pizzę",
   const { result, reads } = await questionLoader(" TRUE ", contents);
   assert.equal(reads, 1);
   assert.equal(result.invalid, false);
-  assert.equal(result.questions.length, 23);
+  assert.equal(result.questions.length, 28);
   assert.ok(result.questions.includes("Daj przepis na dobrą pizzę"));
 });
 
@@ -439,4 +439,65 @@ test('kopia diagnostyczna pokazuje wiadomość i faktyczne argumenty, bez dodatk
   assert.ok(!JSON.stringify(safe).includes('PRIVATE'));
   assert.match(formatMessage(message, 'MAX', true), /"request"[\s\S]*Zakopane/);
   assert.ok(!formatMessage(message, 'MAX', false).includes('request'));
+});
+
+test('model odpowiedzi jest niezależny od żądanego i trafia do kopii; brak jest jawny', () => {
+  const actual = { role: 'assistant', parts: [{ type: 'text', text: 'Opis obrazu.' }, { type: 'data-response-model', data: { modelId: 'api/actual-v123' } }] };
+  assert.equal(module.namespace.messageResponseModel(actual), 'api/actual-v123');
+  assert.match(formatMessage(actual, 'MAX'), /Model: api\/actual-v123/);
+  assert.equal(module.namespace.messageResponseModel({ parts: [{ type: 'data-response-model', data: { modelId: null } }] }), null);
+  assert.equal(module.namespace.messageResponseModel({ parts: [] }), undefined);
+});
+
+
+test('Wygeneruj obraz: kieruje dokładnie jedno żądanie do generatora, bez zwykłego czatu', async () => {
+  const { dispatchImageCommand } = module.namespace;
+  const calls = [];
+  const send = async (text) => {
+    if (await dispatchImageCommand(text, async (prompt) => calls.push(['/api/image', prompt]))) return;
+    calls.push(['/api/chat', text]);
+  };
+  await send('Wygeneruj obraz: Minimalistyczna czaszka, dwa kolory.');
+  assert.deepEqual(calls, [['/api/image', 'Wygeneruj obraz: Minimalistyczna czaszka, dwa kolory.']]);
+  await send('Co widzisz na tym zdjęciu?');
+  assert.equal(calls[1][0], '/api/chat');
+  assert.equal(await dispatchImageCommand('  wygeneruj obraz: logo', async () => {}), true);
+  assert.equal(await dispatchImageCommand('Czy potrafisz wygenerować obraz?', async () => assert.fail('Nie zamawiano generowania')), false);
+});
+
+test('kopia HTML zawiera grafikę, a tekst klienta jest escapowany', async () => {
+  const { png } = await import('./images-helper.mjs');
+  const message = { role: 'user', parts: [{ type: 'text', text: '<script>alert("x")</script>' }, png] };
+  const html = module.namespace.formatMessageHtml(message, 'MAX');
+  assert.match(html, /&lt;script&gt;/);
+  assert.ok(!html.includes('<script>'));
+  assert.ok(html.includes(`<img src="${png.url}"`));
+  assert.equal(module.namespace.messageImageUrls({ parts: [{ ...png, url: 'javascript:alert(1)' }] }).length, 0);
+});
+
+test('kopia całego czatu i obu rozmów zachowuje obrazy i wspólne pytanie tylko raz', async () => {
+  const { png } = await import('./images-helper.mjs');
+  const question = { id: 'u', role: 'user', metadata: { sharedTurnId: 'shared', sentAt: 1 }, parts: [{ type: 'text', text: 'Opisz obraz.' }, png] };
+  const reply = (id, text) => ({ id, role: 'assistant', parts: [{ type: 'text', text }] });
+  const left = [question, reply('a1', 'Opis A.')], right = [question, reply('a2', 'Opis B.')];
+  const chatHtml = formatConversation(left, 'MAX', false, {}, true);
+  assert.ok(chatHtml.includes(png.url));
+  const combined = formatCombinedConversation(left, right, false, {}, true);
+  assert.equal((combined.match(/<img /g) ?? []).length, 1);
+  assert.ok(combined.indexOf('Opisz obraz.') < combined.indexOf('Opis A.'));
+  assert.ok(combined.indexOf('Opis A.') < combined.indexOf('Opis B.'));
+});
+
+test('wygenerowana grafika także trafia do kopii HTML', async () => {
+  const { png } = await import('./images-helper.mjs');
+  const message = { role: 'assistant', parts: [{ type: 'text', text: 'Wygenerowany obraz:' }, { type: 'data-generated-image', data: { imageUrl: png.url } }] };
+  assert.ok(module.namespace.formatMessageHtml(message, 'Generator').includes(png.url));
+});
+
+test('opis Vision pod wygenerowanym obrazem jest dołączany do kopii z rzeczywistym modelem', () => {
+  const message = { role: 'assistant', parts: [{ type: 'text', text: 'Polecenie: logo MAX' }, { type: 'data-response-model', data: { modelId: 'actual/image-generator' } }, { type: 'data-vision-description', data: { provider: 'google', draft: '1. Czaszka.\n2. Napis MAX.\n3. Czarne tło.', modelId: 'actual/vision-model' } }] };
+  const copy = formatMessage(message, 'Generator');
+  assert.match(copy, /Opis zdjęcia — Gemini: 1. Czaszka/);
+  assert.match(copy, /Model: actual\/image-generator/);
+  assert.match(copy, /Model: actual\/vision-model/);
 });

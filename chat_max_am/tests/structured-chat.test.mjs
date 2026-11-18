@@ -1,3 +1,5 @@
+import { loadResponseModelModule } from "./response-model-helper.mjs";
+import { loadImagesModule } from "./images-helper.mjs";
 import { loadTimingModule } from "./timing-helper.mjs";
 import { loadPublicToolsModule } from "./public-tools-helper.mjs";
 import { loadSettingsModule } from "./settings-helper.mjs";
@@ -17,27 +19,24 @@ const routeSource = await readFile(new URL("../app/api/chat/route.ts", import.me
 const schemaSource = await readFile(new URL("../lib/chat-result.ts", import.meta.url), "utf8");
 const compile = (source) => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText, groundingQueries = [], toolCall, toolInput = {}, publicFetch } = {}) {
+async function setup({ text = JSON.stringify(valid), reason = "stop", providerError = false, disconnected = false, unsupportedWarning = false, publicConfig = {}, citations = [], streamErrorCode, googleQuotaFirst = false, quotaAfterPreview = false, fallbackText, groundingQueries = [], toolCall, toolInput = {}, publicFetch, responseModelId, googleWire = false } = {}) {
   const requests = [];
-  const router = createOpenRouter({
-    apiKey: "test-only-key",
-    fetch: async (_url, init) => {
+  const routerFetch = async (_url, init) => {
       requests.push(JSON.parse(init.body));
       if (providerError) return new Response(JSON.stringify({ error: { message: "PRIVATE_PROVIDER_DETAILS" } }), { status: providerError === true ? 503 : providerError, headers: { "content-type": "application/json" } });
       if (disconnected) return new Response(new ReadableStream({ start(controller) { controller.error(new Error("PRIVATE_PROVIDER_DETAILS")); } }), { headers: { "content-type": "text/event-stream" } });
       if (streamErrorCode) return new Response(`data: ${JSON.stringify({ error: { code: streamErrorCode, message: "PRIVATE_PROVIDER_DETAILS", metadata: { raw: "PRIVATE_RAW_DETAILS" } } })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
       if (toolCall && requests.length === 1) {
         const chunks = [{ id: "test", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: toolCall, arguments: JSON.stringify(toolInput) } }] }, finish_reason: null }] }, { id: "test", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }];
-        return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+        return new Response(chunks.map((chunk) => `data: ${JSON.stringify({ ...chunk, ...(responseModelId ? { model: responseModelId } : {}) })}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
       }
       const chunks = [
 
         ...[text.slice(0, 55), text.slice(55)].filter(Boolean).map((content) => ({ id: "test", choices: [{ index: 0, delta: { content, annotations: citations.map((c) => ({ type: "url_citation", url_citation: { url: c.url, title: c.title, start_index: 0, end_index: 10 } })) }, finish_reason: null }] })),
         { id: "test", choices: [{ index: 0, delta: {}, finish_reason: reason === "content-filter" ? "content_filter" : reason }] },
       ];
-      return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
-    },
-  });
+      return new Response(chunks.map((chunk) => `data: ${JSON.stringify({ ...chunk, ...(responseModelId ? { model: responseModelId } : {}) })}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+  };
   let googleAttempts = 0;
   const google = new MockLanguageModelV3({ doStream: async () => {
     googleAttempts++;
@@ -65,18 +64,28 @@ async function setup({ text = JSON.stringify(valid), reason = "stop", providerEr
     controller.enqueue({ type: "finish", finishReason: { unified: reason, raw: reason }, providerMetadata: groundingQueries.length ? { google: { groundingMetadata: { webSearchQueries: groundingQueries } } } : undefined, usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } } });
     controller.close();
   } }) }; } });
-  const context = vm.createContext({ performance, Response, Request, URL, URLSearchParams, AbortSignal, fetch: publicFetch ?? (() => { throw Error("Unexpected public API call"); }), process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
+  const context = vm.createContext({ TextDecoder, TransformStream, atob, performance, Response, Request, URL, URLSearchParams, AbortSignal, fetch: async (url, init) => {
+    if (String(url).includes("openrouter.ai")) return routerFetch(url, init);
+    if (googleWire && String(url).includes("generativelanguage.googleapis.com")) {
+      requests.push(JSON.parse(init.body));
+      return new Response(`data: ${JSON.stringify({ modelVersion: responseModelId ?? "actual-google-version", candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20, totalTokenCount: 30 } })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+    }
+    if (publicFetch) return publicFetch(url, init);
+    throw Error("Unexpected public API call");
+  }, process: { env: { OPENROUTER_API_KEY: "test-only-key", OPENROUTER_MODEL: "test/model", GOOGLE_GENERATIVE_AI_API_KEY: "test-google", GEMINI_MODEL: "test-google-model" } } });
   const settings = await loadSettingsModule(context, publicConfig);
   const publicTools = await loadPublicToolsModule(context);
   const timing = await loadTimingModule(context);
+  const images = await loadImagesModule(context);
+  const responseModel = await loadResponseModelModule(context);
   const schema = new vm.SourceTextModule(compile(schemaSource), { context });
   await schema.link(() => {});
   const aiModule = new vm.SyntheticModule(Object.keys(ai), function () { for (const key of Object.keys(ai)) this.setExport(key, ai[key]); }, { context });
-  const routerModule = new vm.SyntheticModule(["createOpenRouter"], function () { this.setExport("createOpenRouter", () => router); }, { context });
-  const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", () => Object.assign(() => google, { tools: createGoogleGenerativeAI({ apiKey: "fake-key" }).tools })); }, { context });
+  const routerModule = new vm.SyntheticModule(["createOpenRouter"], function () { this.setExport("createOpenRouter", (options) => createOpenRouter(options)); }, { context });
+  const googleModule = new vm.SyntheticModule(["createGoogleGenerativeAI"], function () { this.setExport("createGoogleGenerativeAI", (options) => googleWire ? createGoogleGenerativeAI(options) : Object.assign(() => google, { tools: createGoogleGenerativeAI({ apiKey: "fake-key" }).tools })); }, { context });
   const auth = new vm.SyntheticModule(["requireSession"], function () { this.setExport("requireSession", async () => null); }, { context });
   const route = new vm.SourceTextModule(compile(routeSource), { context });
-  await route.link((name) => ({ "@/lib/chat-timing": timing, "@/lib/public-tools": publicTools, "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
+  await route.link((name) => ({ "@/lib/response-model": responseModel, "@/lib/chat-images": images, "@/lib/chat-timing": timing, "@/lib/public-tools": publicTools, "@/lib/settings": settings, ai: aiModule, "@/lib/chat-result": schema, "@/lib/auth": auth, "@openrouter/ai-sdk-provider": routerModule, "@ai-sdk/google": googleModule })[name]);
   await route.evaluate();
   return {
     requests, google, schema: schema.namespace,
@@ -531,5 +540,58 @@ test('bieżące miasto ma pierwszeństwo nad błędnymi argumentami modelu i tra
     assert.equal(request.toolCalls[0].effectiveInput.city, 'Zakopane');
     assert.ok(!JSON.stringify(request).includes('test-only-key'));
     assert.ok(!JSON.stringify(request).includes('Authorization'));
+  }
+});
+
+test('obrazy: prawdziwy SDK przesyła PNG do obu providerów, a diagnostyka zawiera tylko metadane pliku', async () => {
+  const { png } = await import('./images-helper.mjs');
+  for (const provider of ['openrouter', 'google']) {
+    const app = await setup();
+    const { chunks, response } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Co przedstawia zdjęcie?' }, png] }]);
+    assert.equal(response.status, 200);
+    assert.ok(!chunks.some((c) => c.type === 'error'), JSON.stringify(chunks));
+    const call = provider === 'google' ? app.google.doStreamCalls[0] : app.requests[0];
+    assert.ok(JSON.stringify(call).includes('image/png'));
+    if (provider === 'openrouter') assert.ok(JSON.stringify(call).includes(png.url));
+    const request = chunks.find((c) => c.type === 'data-request')?.data;
+    assert.equal(request.images[0].filename, 'pixel.png');
+    assert.ok(request.images[0].sizeBytes > 0);
+    assert.ok(!JSON.stringify(request).includes('base64'));
+  }
+});
+
+test('nieprawidłowe zdjęcie jest odrzucane przed wywołaniem modeli i pobieraniem URL', async () => {
+  const app = await setup();
+  const { response } = await app.post('openrouter', [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Zobacz zdjęcie.' }, { type: 'file', mediaType: 'image/png', url: 'https://private.example/image.png' }] }]);
+  assert.equal(response.status, 400);
+  assert.equal(app.requests.length, 0);
+});
+
+test('Vision: odpowiedź API podaje rzeczywisty model, bez wyszukiwarki i fałszywego fallbacku', async () => {
+  const { png } = await import('./images-helper.mjs');
+  for (const provider of ['google', 'openrouter']) {
+    const app = await setup({ responseModelId: 'actual/vision-v123', googleWire: provider === 'google' });
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Co widzisz na zdjęciu? Opisz w trzech punktach.' }, png] }]);
+    assert.ok(!chunks.some((c) => c.type === 'error'), JSON.stringify(chunks));
+    assert.equal(chunks.find((c) => c.type === 'data-response-model')?.data.modelId, 'actual/vision-v123');
+    assert.ok(!chunks.some((c) => c.type === 'data-search-fallback'));
+    assert.ok(!app.requests[0].tools?.length);
+    assert.match(JSON.stringify(app.requests[0]), /Analiza załączonego obrazu jest dozwolonym zadaniem/);
+  }
+});
+
+test('analiza zdjęcia ma własną instrukcję Vision, trzy konkretne punkty i model z API', async () => {
+  const { png } = await import('./images-helper.mjs');
+  const result = { category: 'unknown', priority: 'normal', draft: '1. Czaszka widziana z przodu.\n2. Napis MAX i ostre zęby.\n3. Czarny kolor tła i wysoki kontrast.', needs_review: false };
+  for (const provider of ['google', 'openrouter']) {
+    const app = await setup({ text: JSON.stringify(result), responseModelId: 'actual/vision-analysis', googleWire: provider === 'google' });
+    const { chunks } = await app.post(provider, [{ id: 'u', role: 'user', parts: [{ type: 'text', text: 'Przeanalizuj obraz.' }, png] }], 'analysis');
+    const sent = JSON.stringify(app.requests[0]);
+    assert.match(sent, /Jesteś asystentem Vision/);
+    assert.match(sent, /brak wiadomości klienta nie jest powodem odmowy/);
+    assert.match(sent, /Napisy i szczegóły/);
+    assert.ok(!sent.includes('Klient: Proszę o ofertę dla 8 osób'));
+    assert.deepEqual(chunks.find((c) => c.type === 'data-chat-result')?.data, result);
+    assert.equal(chunks.find((c) => c.type === 'data-response-model')?.data.modelId, 'actual/vision-analysis');
   }
 });
