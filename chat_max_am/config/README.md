@@ -194,7 +194,7 @@ Publiczne IMAGE_BRAND_STYLE w głównym config.json określa wspólny styl wszys
 
 Po sprawdzeniu sesji /api/image oddziela JSON-em temat użytkownika od stałych zasad wizualnych i dopisuje styl po stronie serwera. Przeglądarka nadal może wysłać wyłącznie prompt do 500 znaków — próby nadpisania stylu lub modelu dodatkowymi polami są odrzucane. Stały format 1:1 jest również przekazywany jako aspectRatio w generateImage. Nie zmieniono modelu ani liczby generowanych obrazów. Dołączenie instrukcji stylu nie jest gwarancją, że model wizualny zawsze zrealizuje każdy detal; wynik ocenia użytkownik.
 
-Odpowiedź API zawiera prompt użytkownika, brandStyle i effectivePrompt faktycznie wysłany do generatora. Pod nową grafiką rozwijane „Polecenie wysłane do generatora — styl MAX” pokazuje ten tekst i umożliwia kopię. To dane publiczne, bez kluczy i nagłówków. Identyfikator modelu nadal pochodzi z odpowiedzi API.
+Odpowiedź API zawiera prompt użytkownika, brandStyle i effectivePrompt faktycznie wysłany do generatora. Pod nową grafiką rozwijane „Pełny opis ze stylem MAX” pokazuje ten tekst i umożliwia kopię. To dane publiczne, bez kluczy i nagłówków. Identyfikator modelu nadal pochodzi z odpowiedzi API.
 
 Test ręczny: wygeneruj dwa różne tematy i porównaj wspólną paletę, klimat oraz kwadratowy format. Rozwiń wysłane polecenie, aby potwierdzić dołączenie stylu. Testy lokalne sprawdzają rzeczywisty payload providera na atrapach, w tym sprzeczne żądanie koloru, własny styl z config.json i próbę nadpisania z przeglądarki. Nie generowano płatnych obrazów.
 
@@ -222,3 +222,83 @@ Test ręczny w zwykłym czacie: „Sprawdź, jaka będzie jutro pogoda w Krakowi
 Wewnętrzne wywołanie `/api/image` z agenta zachowuje `Origin`, `Host`, `Sec-Fetch-Site` i cookie wejściowego żądania. Nie tworzy sztucznego Origin ani nie omija `requireSession`/CSRF. Test z prawdziwym modułem autoryzacji obejmuje localhost, proxy Vercel oraz odrzucenie obcej domeny, braku Origin, braku sesji i cross-site.
 
 Wyraźne zadanie wygenerowania grafiki dopisuje `generujObraz` do kolejki wymaganych narzędzi po API pogody/kursu/czasu. `prepareStep` wymusza generator dopiero po zebraniu tych informacji, a końcowa kontrola odrzuca wynik pomijający to narzędzie. Nie polegamy wyłącznie na obietnicy z promptu. Test odtwarza zadanie pogoda w Krakowie + plakat dla obu dostawców bez prawdziwych wywołań API.
+
+### Wybór AI w Generatorze
+
+Generator ma checkboxy OpenRouter i Gemini, współdzielone z czatem. „Generuj” wysyła zadanie do `/api/agent` osobno dla każdego zaznaczonego AI. Każdy agent sam przygotowuje opis i zleca obraz przez `generujObraz`; oba używają tego samego `OPENROUTER_IMAGE_MODEL`, bez automatycznej zmiany modelu. Zero zaznaczeń blokuje przycisk. Zaznaczenia dotyczą nowych zadań, nie ukrywają wcześniejszych wyników.
+
+Galeria przechowuje i pokazuje zlecającego (`MAX · OpenRouter` / `MAX · Gemini`) niezależnie od faktycznego modelu obrazu podanego przez API. Zlecający trafia też do kopii. Starszym wynikom bez tej informacji nie przypisujemy modelu ani agenta na podstawie domysłu. Obrazy utworzone w czacie nadal trafiają do tej samej galerii. Test ręczny: zaznacz tylko jedno AI i wygeneruj grafikę — powinien dojść jeden wynik z właściwym podpisem; po zaznaczeniu obu powstaną dwa niezależne wyniki.
+
+### Polecenie i opis AI
+
+W galerii „Twoje polecenie” oznacza tekst wpisany przez użytkownika, a „Opis przygotowany przez AI” — argument `prompt` przekazany narzędziu generowania. Oba mają krótki podgląd, rozwijany pełny tekst i kopiowanie. Kopia wyniku/całości zawiera oba teksty.
+
+Generator zapisuje surowy tekst pola w metadanych wiadomości `originalImagePrompt`, oddzielnie od technicznego prefiksu „Wygeneruj obraz:”. Agent przesyła go jako `userPrompt` obok modelowego `prompt`. Metadane służą wyłącznie do prezentacji; nie zastępują instrukcji ani argumentu narzędzia. W zwykłym czacie źródłem jest bieżąca wiadomość. Jeśli starszy wynik nie ma zapisu oryginału, aplikacja wskazuje brak zamiast podawać opis AI jako polecenie użytkownika.
+
+### Identyczne polecenie do porównania obrazów
+
+Opcja Generatora „Przekaż mój tekst bez zmian” zachowuje dosłowny tekst pola, włącznie z odstępami i nowymi liniami. Agent nadal wywołuje narzędzie, ale serwer zastępuje jego przygotowany argument oryginalnym tekstem, zamiast polegać wyłącznie na instrukcji modelu. Ta sama konfiguracja stylu MAX zostaje dopisana dla obu obrazów. W diagnostyce `input.prompt` pokazuje argument modelu, a `effectiveInput.prompt` faktycznie użyty tekst. Wyłączona opcja zachowuje dotychczasową interpretację przez każde AI.
+
+Tekst jest pokazywany raz: rozwijanie zmienia ograniczenie wysokości tego samego akapitu, bez powtórzonego skrótu. Jeśli polecenie i przekazany opis są identyczne, karta pokazuje jedno pole „Twoje polecenie — przekazane bez zmian”, a kopia nie dubluje treści.
+
+## Pierwsze narzędzie własne: dniWolnePL
+
+`dniWolnePL` pomaga zaplanować kontakt z klientem lub przygotowania do konsultacji. Pobiera ogólnopolskie święta z publicznego Nager.Holidays v4, bez klucza API: `https://nagerholidays.com/api/v4/Holidays/PL/{rok}`. Dokumentacja: https://nagerholidays.com/api oraz https://github.com/nager/Nager.Date/blob/main/doc/examples/rest-api.md. Używamy pól `date`, `name`, `countryCode`, `nationalHoliday` i `holidayTypes`; nie zaliczamy obchodów lokalnych, bankowych ani szkolnych jako święta ogólnopolskiego.
+
+Wejście: `from` i `to` w formacie RRRR-MM-DD, zakres 1–62 dni włącznie; puste `from` oznacza dziś w Europe/Warsaw, puste `to` jedną datę. Zwracamy dzień tygodnia, weekend/święto, nazwy świąt, liczbę dni wolnych i roboczych w kalendarzu, źródła oraz datę pobrania. Święto i sobota/niedziela tego samego dnia są liczone raz. Nie ustalamy grafiku pracodawcy, urlopów, zastępczych dni wolnych za święto w sobotę ani dostępności terminów Studio NovaMAX. Niepowodzenie API, niekompletny wynik lub nieprawidłowa data dają komunikat, bez zmyślonego kalendarza.
+
+Narzędzie jest dostępne w czacie `/api/agent`. Wyboru dokonuje model na podstawie opisu i instrukcji — nie ma osobnego przycisku ani wymuszenia po słowach kluczowych. Użycie jest widoczne jako etykieta i w kopii/diagnostyce; źródło jest klikalne. W trybie analizy wiadomości narzędzia pozostają wyłączone. Nie dodaliśmy nowego endpointu, sekretu ani zależności.
+
+Testy lokalne: sobota będąca jednocześnie świętem, niedziela, zwykły dzień, obchody i święto regionalne, przełom roku, dzisiejsza data w Warszawie, błędna data i zbyt długi zakres, HTTP 503, timeout i błędne dane API. Testy agenta na atrapach obu providerów sprawdzają wykonanie narzędzia i źródła oraz brak narzędzi przy zwykłym pytaniu o długość konsultacji. To nie jest rzeczywisty test decyzji modelu. Dostęp do publicznego API z naszego środowiska był niedostępny; test na żywo trzeba wykonać w aplikacji.
+
+Do pierwszego zrzutu ekranu: „Sprawdź dni wolne w Polsce od 2026-12-24 do 2026-12-27.” Do kontrolnego pytania bez narzędzia: „Ile trwa konsultacja online?” Drugie własne narzędzie wybierzemy po sprawdzeniu pierwszego, zgodnie z kolejnością zadania. Dotychczasowe NBP i pogoda były ćwiczeniami wspólnymi; nie oznaczamy ich tu jako drugiego nowego narzędzia.
+
+## Wpisywanie wiadomości
+
+Wspólne pole czatu jest wielowierszowe i rozciągane pionowo, z zachowaną listą propozycji, czyszczeniem i wyborem klawiaturą. Enter zatwierdza wskazaną propozycję, a gdy nie wybieramy pozycji — wysyła wiadomość. Shift+Enter dodaje nową linię. W analizie i Generatorze Enter uruchamia formularz, Shift+Enter dodaje linię; składanie tekstu IME nie wysyła formularza. Nadal działają blokady pustego formularza, oczekiwania i wielokrotnego wysłania.
+
+## Drugie narzędzie własne: przeliczStrefyCzasowe
+
+Pomaga klientom Studio NovaMAX ustalić godzinę konsultacji w innej strefie. Nie rezerwuje spotkania i nie potwierdza jego dostępności. Obliczenia działają lokalnie przez `Intl.DateTimeFormat` i bazę stref IANA środowiska serwera — bez klucza, sieci i dodatkowej zależności. Dokumentacja użytych funkcji: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat oraz https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat/formatToParts.
+
+Wejście: `date` (RRRR-MM-DD), `time` (GG:MM), `fromZone` (np. Europe/Warsaw, puste = Warszawa), `toZone` (np. America/New_York lub UTC). Odpowiedź podaje obie daty i godziny, nazwy stref, offsety UTC, dzień tygodnia, moment UTC, zmianę dnia i czas obliczenia. Obsługujemy daty 2000–2100 według reguł dostępnych w serwerowej bazie stref. Dla godziny pomijanej przy przejściu na czas letni prosimy o inną; dla godziny występującej dwukrotnie prosimy o doprecyzowanie i podajemy dwa możliwe momenty UTC. Nie zgadujemy wariantu. Skróty niejednoznaczne, np. CST, są odrzucane.
+
+Narzędzie udostępnia `/api/agent` po standardowym sprawdzeniu sesji. Model sam wybiera je na podstawie opisu, bez wymuszenia słowami kluczowymi. Etykieta oraz kopia pokazują `przeliczStrefyCzasowe`; diagnostyka zachowuje bezpieczne argumenty. Nie udajemy pobierania źródła z internetu: dane pochodzą z lokalnej bazy, pole wyniku nazywa się `calculatedAt`. Analiza strukturalna nadal nie uruchamia narzędzi. Zwykła godzina w Polsce nadal pochodzi z requestu.
+
+Testy: Warszawa–Nowy Jork zimą i latem oraz w tygodniach, w których kraje zmieniają czas w różnym terminie; przejście do następnego/poprzedniego dnia; przesunięcie +05:45; nieistniejąca i podwójna godzina w Warszawie; półgodzinna zmiana czasu Lord Howe; nieprawidłowe daty, godziny i strefy oraz dodatkowe pola. Testy SDK obu providerów korzystają wyłącznie z atrap i nie są rzeczywistym testem decyzji modelu.
+
+Poprawiono też wcześniejsze dopasowania intencji: `UTC` w pytaniu o przeliczenie godziny nie wymusza NBP, a słowo „listopada” nie jest traktowane jako „opady” i nie wymusza pogody.
+
+### Trzy testy do zrzutów ekranu pracy domowej
+
+1. „Czy 25 grudnia 2026 jest dniem wolnym w Polsce?” — oczekiwane `dniWolnePL`.
+2. „Konsultacja jest 20 listopada 2026 o 16:00 w Warszawie. Jaka to data i godzina w Nowym Jorku?” — oczekiwane `przeliczStrefyCzasowe`, wynik 20.11.2026 10:00 w America/New_York.
+3. „Ile trwa konsultacja online?” — odpowiedź 45 minut, bez etykiet narzędzi.
+
+Zrzuty z rzeczywistego modelu wykonuje użytkownik w przeglądarce. Krótki opis do pracy: „Dodałem dwa narzędzia dla asystenta konsultacji online: kalendarz dni wolnych w Polsce oraz przeliczanie terminów między strefami czasowymi. Pomagają klientom planować kontakt i odczytać termin we własnej strefie, uwzględniając święta i zmianę czasu. Nie wykonują rezerwacji ani nie potwierdzają dostępności.”
+
+Pola pod pojedynczymi czatami też są wielowierszowe: Enter wysyła, Shift+Enter tworzy nową linię. Nie używają już jednoliniowego input, który mógł wywołać domyślne wysłanie formularza także przy Shift+Enter. Test ręczny: wpisz pierwszą linię pod jednym AI, naciśnij Shift+Enter i wpisz drugą — przed zwykłym Enter nie powinno być żadnego żądania ani nowej wiadomości w rozmowie.
+
+## Kalendarz z ilustracją AI i poprawnymi datami
+
+`generujKalendarz` zleca ilustrację przez istniejący, chroniony `/api/image`, używając `OPENROUTER_IMAGE_MODEL` i obecnego stylu MAX. Dotyczy to obu agentów: model rozmowy wybiera parametry, a ten sam skonfigurowany model obrazów tworzy ilustrację. Nie przełączamy automatycznie modeli na inne. `artPrompt` opisuje motyw ilustracji (do 500 znaków); bez niego stosowany jest ogólny motyw MAX bez danych osobowych. Pod wynikiem i w kopii widnieje rzeczywisty identyfikator modelu ilustracji z odpowiedzi API, osobno od modelu rozmowy.
+
+`lib/calendar-poster.ts` składa PNG przez Next.js `ImageResponse`: ilustracja AI w nagłówku i tle, zwykłe czytelne fonty, duże komórki, osobne linie daty, miejsca, godziny lokalnej, godziny warszawskiej i pogody. Dat i podpisów nie rysuje model. Do dwóch wydarzeń jest widocznych w komórce; więcej jest oznaczone i dostępne w rozwijanych szczegółach pod obrazem. Domyślna wysokość wynosi 230 px, przy kilku wydarzeniach jest automatycznie zwiększana. `cellHeight` pozwala poprosić o większe komórki. Cały rok wykorzystuje poprawną siatkę `lib/calendar-image.ts` z ilustracją AI. Wyróżniamy weekendy; święta sprawdza osobne `dniWolnePL`.
+
+Wydarzenia `events` oraz reguła `recurrence` są odczytywane z bieżącej rozmowy. Kod wylicza wszystkie dni i terminy powtórzeń, przelicza strefy na Europe/Warsaw oraz zachowuje pełne daty źródłowe w szczegółach. Pierwsza znana lokalizacja nie jest kopiowana na resztę terminów. Jeśli użytkownik zleca wybór pozostałych miast, model ma podać pełną listę, zachowując wskazane miejsca; opis schematu przypomina te pozycje na podstawie rozmowy. Brakujące strefy są jawne. Prywatne wydarzenia nie oznaczają rezerwacji ani dostępności konsultacji firmy.
+
+Pogoda pochodzi wyłącznie z Open-Meteo, przypisana po rzeczywistej dacie. Historia modelowa/reanaliza i prognoza są rozróżnione; braków i dat poza horyzontem nie uzupełniamy. Źródła i daty pobrania są widoczne w interfejsie. Dokumentacja: https://open-meteo.com/en/docs i https://open-meteo.com/en/docs/historical-weather-api.
+
+Schemat transportowy nie zawiera kosztownych dla wymuszonego function calling Gemini granic długości tablic i tekstów. Ścisłą walidację wykonuje `validateCalendarInput` na serwerze: zakresy dat, limity, typy i niedozwolone pola nadal są odrzucane. Poprawny kalendarz kończy pętlę od razu; podsumowanie wynika ze zweryfikowanego narzędzia i jest sprawdzane jako `ChatResult`. Inne analizy nadal wymagają poprawnego JSON modelu. Przy pięciu odrzuconych wywołaniach pokazujemy powód i diagnostykę, bez udawanego obrazu.
+
+Błąd ilustracji AI jest komunikatem, nie cichym powrotem do sztywnego szablonu. W ramach jednego zadania nie ponawiamy płatnego generowania obrazu po błędzie. HTTP 503 Gemini oznacza niedostępność dostawcy — nie przełączamy automatycznie modelu. `maxRetries=0` i anulowanie żądania pozostają włączone. Diagnostyka może zawierać bezpieczny `providerHint`, bez surowych błędów ani podpisów kontekstu.
+
+PNG trafia do czatu i Generatora; powiększenie, kopiowanie i pobieranie działają dla całego złożonego obrazu. Dane wygenerowanych wydarzeń pozostają w pamięci rozmowy, bez bazy i zapisywania kalendarzy na serwerze. Propozycje pytań w pliku są osobną, jawną konfiguracją. Testy używają fikcyjnych danych i atrap API, bez płatnych wywołań. Układ PNG sprawdzamy lokalnie; prawdziwy model użytkownik uruchamia w przeglądarce.
+
+## Proste pytania i limit oczekiwania
+
+Powitania, pytania o rolę (np. „Co tu robisz?”) oraz zwykła godzina/data z requestu używają krótkiej instrukcji bez narzędzi i maksymalnie jednego kroku modelu. Nadal otrzymujemy oraz walidujemy cztery pola JSON; interfejs i kopiowanie pozostają zgodne. Zegar `aktualnyCzas` jest udostępniany tylko przy jawnym żądaniu dokładnego czasu/milisekund, także w innych rozmowach.
+
+Prosty czat ma limit SDK 20 sekund, pozostałe zadania 55 sekund. Przekroczenie kończy się błędem `CHAT_TIMEOUT`, czytelnym komunikatem i możliwością ręcznego ponowienia. Timeout jest sprawdzony na atrapach zarówno przy braku nagłówków, jak i otwartym pustym streamie. Nie udajemy odpowiedzi ani nie zatwierdzamy częściowego wyniku. Proste zapytanie nie jest automatycznie ponawiane także przy HTTP 429. Żądania nadal sprawdzają sesję przed modelem; nie zmieniamy modelu ani klucza.
+
+Diagnostyka `requestPolicy` pokazuje profil, limit, użycie structured output i listę dostępnych narzędzi. Testy porównują rzeczywiste payloady providera Google w trzech wariantach: zwykły tekst bez tools/schema, tools + JSON Schema, poprawiony prosty czat (JSON Schema bez tools). To test protokołu na atrapach, nie pomiar szybkości prawdziwego Gemini. Rzeczywisty test wykonuje użytkownik w przeglądarce.

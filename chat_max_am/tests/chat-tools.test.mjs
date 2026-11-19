@@ -369,7 +369,7 @@ test("włączona lista odczytuje prawdziwy plik z obiektem i pytaniem o pizzę",
   const { result, reads } = await questionLoader(" TRUE ", contents);
   assert.equal(reads, 1);
   assert.equal(result.invalid, false);
-  assert.equal(result.questions.length, 28);
+  assert.deepEqual([...result.questions], JSON.parse(contents).questions);
   assert.ok(result.questions.includes("Daj przepis na dobrą pizzę"));
 });
 
@@ -500,4 +500,49 @@ test('opis Vision pod wygenerowanym obrazem jest dołączany do kopii z rzeczywi
   assert.match(copy, /Opis zdjęcia — Gemini: 1. Czaszka/);
   assert.match(copy, /Model: actual\/image-generator/);
   assert.match(copy, /Model: actual\/vision-model/);
+});
+
+test('kopia grafiki rozróżnia zlecającego agenta od faktycznego modelu obrazu', () => {
+  for (const [requestedBy, name] of [['openrouter', 'OpenRouter'], ['google', 'Gemini']]) {
+    const picture = { role: 'assistant', parts: [{ type: 'text', text: 'Opis: plakat' }, { type: 'data-generated-image', data: { requestedBy } }, { type: 'data-response-model', data: { modelId: 'actual/shared-image-model' } }] };
+    const copy = formatMessage(picture, 'Generator');
+    assert.ok(copy.includes(`Zlecił: MAX · ${name}`));
+    assert.ok(copy.includes('Model: actual/shared-image-model'));
+    assert.ok(formatConversation([picture], 'Generator').includes(`Zlecił: MAX · ${name}`));
+  }
+});
+
+test('uwagi kalendarza i brakujące strefy trafiają do kopii bez dopisywania fikcyjnych danych', () => {
+  const message = { role: 'assistant', parts: [{ type: 'text', text: 'Kalendarz' }, { type: 'data-generated-image', data: { renderer: 'calendar-code', calendarDetails: { events: [{ sourceDate: '2032-05-04', label: 'Spotkanie', time: '16:00', timeZone: '', missingZone: true }], warnings: ['Podaj pozostałe miasta.'], weatherRequested: true, weatherCity: 'Miasto testowe', weatherDaysCount: 0 } } }] };
+  const copy = formatMessage(message, 'Generator');
+  assert.match(copy, /BRAK STREFY/);
+  assert.match(copy, /Podaj pozostałe miasta/);
+  assert.match(copy, /BRAK DANYCH/);
+});
+
+test('brakujące dane prywatnego kalendarza wymagają doprecyzowania przez użytkownika', () => {
+  const message = { role: 'assistant', parts: [
+    { type: 'data-chat-result', data: { category: 'unknown', priority: 'normal', draft: 'Podaj pozostałe miasta.', needs_review: true } },
+    { type: 'data-generated-image', data: { renderer: 'calendar-code' } },
+  ] };
+  const copy = formatMessage(message, 'Generator');
+  assert.match(copy, /Do doprecyzowania przez użytkownika/);
+  assert.doesNotMatch(copy, /przez pracownika/);
+});
+
+test('kopia zachowuje bezpieczny status i etap błędu dostawcy w diagnostyce', () => {
+  const failure = { code: 'PROVIDER_ERROR', statusCode: 400, finishReason: null, stage: 'before_tool', requiredTools: ['generujKalendarz'], message: 'MAX: OpenRouter odrzucił zapytanie (HTTP 400).' };
+  const message = { role: 'assistant', parts: [{ type: 'text', text: failure.message }, { type: 'data-request', data: { endpoint: '/api/agent', provider: 'openrouter', model: 'test-model', mode: 'chat', message: 'Kalendarz', historyMessageCount: 1, toolCalls: [], location: null, failure } }] };
+  const copy = formatMessage(message, 'MAX', true);
+  assert.match(copy, /HTTP 400/);
+  assert.match(copy, /"stage": "before_tool"/);
+  assert.match(copy, /"code": "PROVIDER_ERROR"/);
+});
+
+test('kopia JSON zachowuje profil prostego requestu, limit i pustą listę narzędzi', () => {
+  const message = { role: 'assistant', parts: [{ type: 'text', text: 'Odpowiedź.' }, { type: 'data-request', data: { endpoint: '/api/agent', provider: 'google', model: 'test-model', mode: 'chat', message: 'Co tu robisz?', historyMessageCount: 1, toolCalls: [], location: null, requestPolicy: { profile: 'simple_chat', timeoutMs: 20000, structuredOutput: true, toolNames: [] } } }] };
+  const copy = formatMessage(message, 'MAX', true);
+  assert.match(copy, /"profile": "simple_chat"/);
+  assert.match(copy, /"timeoutMs": 20000/);
+  assert.match(copy, /"toolNames": \[\]/);
 });

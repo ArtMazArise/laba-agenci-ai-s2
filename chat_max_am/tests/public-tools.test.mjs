@@ -25,7 +25,11 @@ test('dobór narzędzi: NBP, pogoda, dokładny czas; zwykła godzina bez zmian',
   for (const question of ['Jaka jest dziś pogoda?', 'Jaka będzie pogoda za tydzień?', 'Daj pogodę na trzy najbliższe dni']) assert.deepEqual(plain(requestedPublicTools(question)), ['pogodaOpenMeteo']);
   assert.deepEqual(plain(requestedPublicTools('Która jest DOKŁADNIE godzina? Podaj ms.')), ['aktualnyCzas']);
   assert.deepEqual(plain(requestedPublicTools('Która jest godzina?')), []);
+  assert.deepEqual(plain(requestedPublicTools('Spotkania dokładnie co trzeci dzień o godzinie 16:00 czasu lokalnego.')), []);
   assert.deepEqual(plain(requestedPublicTools('Kurs programowania')), []);
+  assert.deepEqual(plain(requestedPublicTools('Konsultacja 20 listopada o 16:00 w Warszawie. Jaka to godzina w Nowym Jorku?')), []);
+  assert.deepEqual(plain(requestedPublicTools('Czy 11 listopada jest dniem wolnym?')), []);
+  assert.deepEqual(plain(requestedPublicTools('Czy jutro będą opady deszczu?')), ['pogodaOpenMeteo']);
 });
 
 test('NBP: tylko potrzebne pola, data tabeli osobno od pobrania', async () => {
@@ -110,9 +114,10 @@ test('OpenMeteo: brak miasta w API, wadliwe dane i HTTP 503 nie wywracają aplik
 
 test('narzędzia mają aktualnyCzas i ścisłe schematy wejściowe', async () => {
   const tools = createPublicTools(new AbortController().signal);
-  assert.deepEqual(Object.keys(tools), ['kursWalutyNBP', 'pogodaOpenMeteo', 'aktualnyCzas']);
+  assert.deepEqual(Object.keys(tools), ['przeliczStrefyCzasowe', 'dniWolnePL', 'kursWalutyNBP', 'pogodaOpenMeteo', 'aktualnyCzas']);
   for (const tool of Object.values(tools)) assert.equal(tool.inputSchema.jsonSchema.additionalProperties, false);
   assert.equal((await tools.aktualnyCzas.inputSchema.validate({ extra: true })).success, false);
+  assert.equal((await tools.dniWolnePL.inputSchema.validate({ from: '2026-12-25', to: '', send_now: true })).success, false);
   assert.equal((await tools.kursWalutyNBP.inputSchema.validate({ currency: 'EUR', date: '', send_now: true })).success, false);
 });
 
@@ -216,4 +221,108 @@ test('opis porównania pokazuje oba kursy, dokładne grosze i rzeczywiste daty',
   assert.match(same, /tej samej daty publikacji/);
   const fall = format({ currency: 'EUR', historical: { rate: 4.5, effectiveDate: '2026-11-06', tableNumber: '217/A', requestedDate: '2026-11-06' }, current: { rate: 4.4, effectiveDate: '2026-11-13', tableNumber: '221/A' } });
   assert.match(fall, /-0,1000 zł/);
+});
+
+const holiday = (date, name = 'Public holiday', nationalHoliday = true, holidayTypes = ['Public']) => ({ date, name, countryCode: 'PL', nationalHoliday, holidayTypes, subdivisionCodes: null });
+const calendar = module.namespace.dniWolnePL;
+test('dni wolne: święta i weekendy nie sumują tego samego dnia dwa razy', async () => {
+  const result = await calendar({ from: '2026-12-24', to: '2026-12-27' }, { now, fetcher: async (url) => {
+    assert.equal(url, 'https://nagerholidays.com/api/v4/Holidays/PL/2026');
+    return reply([holiday('2026-12-24', 'Christmas Eve'), holiday('2026-12-25', 'Christmas Day'), holiday('2026-12-26', 'Second Day of Christmas')]);
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(result.freeDaysCount, 4);
+  assert.equal(result.workingDaysCount, 0);
+  assert.equal(result.days[2].weekend, true);
+  assert.equal(result.days[2].publicHoliday, true);
+  assert.equal(result.days[3].weekday, 'niedziela');
+  assert.equal(result.days[3].publicHoliday, false);
+  assert.equal(result.sources[0].fetchedAt, now().toISOString());
+  assert.match(result.note, /Nie potwierdza dostępności/);
+});
+test('zwykły dzień, święto lokalne i obchody nie są ogólnopolskim świętem', async () => {
+  const result = await calendar({ from: '2026-11-18', to: '' }, { now, fetcher: async () => reply([holiday('2026-01-01'), holiday('2026-11-18', 'Regional', false), holiday('2026-11-18', 'Observance', true, ['Observance'])]) });
+  assert.equal(result.ok, true);
+  assert.equal(result.days[0].dayOffCalendar, false);
+  assert.equal(result.workingDaysCount, 1);
+});
+test('kalendarz: przełom roku pobiera dwa kalendarze, dziś liczy w Warszawie', async () => {
+  const calls = [];
+  const fetcher = async (url) => { calls.push(url); return reply([holiday(`${url.slice(-4)}-01-01`, 'New Year')]); };
+  const result = await calendar({ from: '2026-12-31', to: '2027-01-02' }, { now, fetcher });
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 2);
+  assert.equal(result.days[1].publicHoliday, true);
+  const midnight = await calendar({ from: '', to: '' }, { now: () => new Date('2026-12-31T23:30:00Z'), fetcher });
+  assert.equal(midnight.from, '2027-01-01');
+});
+test('nieprawidłowe daty i nadmierny zakres nie wywołują API', async () => {
+  let calls = 0;
+  for (const input of [{ from: '2026-02-30', to: '' }, { from: '2026-12-31', to: '2026-01-01' }, { from: '2026-01-01', to: '2026-12-31' }, { from: '1999-01-01', to: '' }]) {
+    assert.equal((await calendar(input, { fetcher: async () => { calls++; throw Error('Unexpected'); } })).ok, false);
+  }
+  assert.equal(calls, 0);
+});
+test('awaria, nieprawidłowy JSON i obcy kraj nie są pozornie poprawnym kalendarzem', async () => {
+  for (const fetcher of [async () => reply({}, 503), async () => { throw Error('timeout'); }, async () => reply([]), async () => reply([{ ...holiday('2026-01-01'), countryCode: 'DE' }]), async () => reply([{ date: '2026-01-01' }])]) {
+    const result = await calendar({ from: '2026-01-01', to: '' }, { now, fetcher });
+    assert.equal(result.ok, false);
+    assert.equal(result.days, undefined);
+    assert.ok(result.message.length > 20);
+  }
+});
+
+const convertZone = module.namespace.przeliczStrefyCzasowe;
+const zoneInput = (date, time, toZone = 'America/New_York', fromZone = 'Europe/Warsaw') => ({ date, time, fromZone, toZone });
+test('strefy: Warszawa–Nowy Jork zimą, latem i między różnymi zmianami czasu', () => {
+  for (const [date, expected] of [['2026-11-20', '10:00'], ['2026-07-15', '10:00'], ['2026-03-20', '11:00']]) {
+    const result = convertZone(zoneInput(date, '16:00'), { now });
+    assert.equal(result.ok, true);
+    assert.equal(result.source.time, '16:00');
+    assert.equal(result.target.date, date);
+    assert.equal(result.target.time, expected);
+    assert.equal(result.dayDifference, 0);
+    assert.equal(result.calculatedAt, now().toISOString());
+  }
+});
+test('strefy: zmiana daty i offset kwadransowy', () => {
+  const next = convertZone(zoneInput('2026-11-20', '23:30', 'Asia/Kathmandu'));
+  assert.equal(next.ok, true);
+  assert.equal(next.target.date, '2026-11-21');
+  assert.equal(next.target.time, '04:15');
+  assert.equal(next.target.utcOffset, 'UTC+05:45');
+  assert.equal(next.dayDifference, 1);
+  const previous = convertZone(zoneInput('2026-11-20', '08:00', 'Pacific/Honolulu'));
+  assert.equal(previous.target.date, '2026-11-19');
+  assert.equal(previous.target.time, '21:00');
+  assert.equal(previous.dayDifference, -1);
+});
+test('nieistniejąca i dwukrotna godzina w Polsce nie są zgadywane', () => {
+  const gap = convertZone(zoneInput('2026-03-29', '02:30'));
+  assert.equal(gap.ok, false);
+  assert.equal(gap.code, 'NONEXISTENT_LOCAL_TIME');
+  assert.equal(gap.target, undefined);
+  const fold = convertZone(zoneInput('2026-10-25', '02:30'));
+  assert.equal(fold.ok, false);
+  assert.equal(fold.code, 'AMBIGUOUS_LOCAL_TIME');
+  assert.equal(fold.options.length, 2);
+  assert.deepEqual(plain(fold.options.map((option) => option.utc)), ['2026-10-25T00:30:00.000Z', '2026-10-25T01:30:00.000Z']);
+  assert.equal(fold.target, undefined);
+});
+test('strefy: uwzględnia półgodzinną zmianę czasu Lord Howe', () => {
+  assert.equal(convertZone(zoneInput('2026-10-04', '02:15', 'UTC', 'Australia/Lord_Howe')).code, 'NONEXISTENT_LOCAL_TIME');
+  assert.equal(convertZone(zoneInput('2026-04-05', '01:45', 'UTC', 'Australia/Lord_Howe')).options.length, 2);
+});
+test('strefy: błędna data, godzina, strefa i skrót są odrzucane; UTC jest obsługiwane', async () => {
+  for (const input of [zoneInput('2026-02-30', '16:00'), zoneInput('2026-11-20', '24:00'), zoneInput('2026-11-20', '16:00', 'Mars/Unknown'), zoneInput('2026-11-20', '16:00', 'CST'), zoneInput('2026-11-20', '16:00', '')]) assert.equal(convertZone(input).ok, false);
+  const result = convertZone(zoneInput('2026-11-20', '16:00', 'UTC', ''));
+  assert.equal(result.target.time, '15:00');
+  assert.equal(result.utc, '2026-11-20T15:00:00.000Z');
+  const tools = createPublicTools(new AbortController().signal);
+  assert.equal((await tools.przeliczStrefyCzasowe.inputSchema.validate({ ...zoneInput('2026-11-20', '16:00'), send_now: true })).success, false);
+});
+test('przeliczenie UTC i GMT nie wymusza narzędzia walutowego', () => {
+  assert.deepEqual(plain(requestedPublicTools('Przelicz 16:00 z UTC na godzinę w Warszawie.')), []);
+  assert.deepEqual(plain(requestedPublicTools('MAX, przelicz czas GMT na czas Polski.')), []);
+  assert.deepEqual(plain(requestedPublicTools('Przelicz 150 PLN na EUR.')), ['kursWalutyNBP']);
 });

@@ -37,6 +37,10 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
     chat: "../app/api/chat/route.ts",
     image: "../app/api/image/route.ts",
     "@/lib/agent-tools": "../lib/agent-tools.ts",
+    "./calendar-image": "../lib/calendar-image.ts",
+    "./calendar-events": "../lib/calendar-events.ts",
+    "./calendar-weather": "../lib/calendar-weather.ts",
+    "./calendar-poster": "../lib/calendar-poster.ts",
   };
   class PreconditionFailed extends Error {}
   class MockAPICallError extends Error {
@@ -70,8 +74,8 @@ async function setup(t, overrides = {}, sharedDirectory, blobState = { value: nu
       await publicTools.evaluate(); modules.set(name, publicTools); return publicTools;
     }
     let module;
-    if (name.startsWith("node:")) {
-      const builtin = await import(name);
+    if (name.startsWith("node:") || name === "react" || name === "next/og") {
+      const builtin = await import(name === "next/og" ? "next/og.js" : name);
       module = new vm.SyntheticModule(Object.keys(builtin), function () {
         for (const key of Object.keys(builtin)) this.setExport(key, builtin[key]);
       }, { context });

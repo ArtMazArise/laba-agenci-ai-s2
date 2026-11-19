@@ -27,12 +27,16 @@ export function messageRequest(message: Pick<UIMessage, "parts">): ChatRequestDi
   if ((data.endpoint !== "/api/chat" && data.endpoint !== "/api/agent") || (data.provider !== "openrouter" && data.provider !== "google") || !["chat", "analysis", "duel"].includes(String(data.mode)) || typeof data.model !== "string" || typeof data.message !== "string" || typeof data.historyMessageCount !== "number" || !Number.isInteger(data.historyMessageCount) || data.historyMessageCount < 0 || !Array.isArray(data.toolCalls)) return;
   const safeInput = (input: unknown): Record<string, string | number | boolean | null> => {
     if (!input || typeof input !== "object" || Array.isArray(input)) return {};
-    return Object.fromEntries(Object.entries(input).filter(([key, value]) => ["city", "startOffsetDays", "days", "currency", "date", "prompt", "query"].includes(key) && (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))));
+    return Object.fromEntries(Object.entries(input).filter(([key, value]) => ["city", "startOffsetDays", "days", "currency", "date", "prompt", "query", "from", "to", "time", "fromZone", "toZone", "year", "month", "weatherCity", "cellHeight"].includes(key) && (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))));
   };
   const toolCalls = data.toolCalls.flatMap((call) => call && typeof call === "object" && typeof call.name === "string" && /^[A-Za-z]\w{0,63}$/.test(call.name) && Number.isInteger(call.attempt) && call.attempt >= 1 && Number.isInteger(call.step) && call.step >= 0 ? [{ attempt: call.attempt, step: call.step, name: call.name, input: safeInput(call.input), effectiveInput: safeInput(call.effectiveInput) }] : []);
   const coords = data.location as Record<string, unknown> | null;
   const location = coords && typeof coords.latitude === "number" && Number.isFinite(coords.latitude) && Math.abs(coords.latitude) <= 90 && typeof coords.longitude === "number" && Number.isFinite(coords.longitude) && Math.abs(coords.longitude) <= 180 ? { latitude: coords.latitude, longitude: coords.longitude } : null;
-  return { endpoint: data.endpoint, provider: data.provider, model: data.model, mode: data.mode as ChatRequestDiagnostics["mode"], message: data.message, historyMessageCount: data.historyMessageCount, location, toolCalls, ...(Array.isArray(data.images) ? { images: data.images.flatMap((image) => image && typeof image.filename === "string" && typeof image.mediaType === "string" && typeof image.sizeBytes === "number" && Number.isFinite(image.sizeBytes) && image.sizeBytes >= 0 ? [{ filename: image.filename, mediaType: image.mediaType, sizeBytes: image.sizeBytes }] : []) } : {}) };
+  const policy = data.requestPolicy as Record<string, unknown> | undefined;
+  const requestPolicy: ChatRequestDiagnostics["requestPolicy"] = policy && ["simple_chat", "agent", "analysis"].includes(String(policy.profile)) && typeof policy.timeoutMs === "number" && Number.isFinite(policy.timeoutMs) && policy.timeoutMs > 0 && policy.timeoutMs <= 60_000 && typeof policy.structuredOutput === "boolean" && Array.isArray(policy.toolNames) && policy.toolNames.every((name) => typeof name === "string" && /^[A-Za-z]\w{0,63}$/.test(name)) ? { profile: policy.profile as "simple_chat" | "agent" | "analysis", timeoutMs: policy.timeoutMs, structuredOutput: policy.structuredOutput, toolNames: policy.toolNames as string[] } : undefined;
+  const f = data.failure as Record<string, unknown> | undefined;
+  const failure: ChatRequestDiagnostics["failure"] = f && typeof f.code === "string" && /^[A-Z_]{1,64}$/.test(f.code) && (f.statusCode === null || typeof f.statusCode === "number" && Number.isInteger(f.statusCode) && f.statusCode >= 400 && f.statusCode <= 599) && (f.finishReason === null || typeof f.finishReason === "string" && /^[a-z-]{1,32}$/.test(f.finishReason)) && (f.stage === "before_tool" || f.stage === "after_tool") && Array.isArray(f.requiredTools) && f.requiredTools.every((v) => typeof v === "string" && /^[A-Za-z]\w{0,63}$/.test(v)) && typeof f.message === "string" && f.message.startsWith("MAX:") && f.message.length <= 1200 ? { ...(["thought_signature", "tool_schema", "tool_choice", "routing"].includes(String(f.providerHint)) ? { providerHint: f.providerHint as "thought_signature" | "tool_schema" | "tool_choice" | "routing" } : {}), code: f.code, statusCode: f.statusCode as number | null, finishReason: f.finishReason as string | null, stage: f.stage, requiredTools: f.requiredTools as string[], message: f.message } : undefined;
+  return { endpoint: data.endpoint, provider: data.provider, model: data.model, mode: data.mode as ChatRequestDiagnostics["mode"], message: data.message, historyMessageCount: data.historyMessageCount, location, toolCalls, ...(requestPolicy ? { requestPolicy } : {}), ...(failure ? { failure } : {}), ...(Array.isArray(data.images) ? { images: data.images.flatMap((image) => image && typeof image.filename === "string" && typeof image.mediaType === "string" && typeof image.sizeBytes === "number" && Number.isFinite(image.sizeBytes) && image.sizeBytes >= 0 ? [{ filename: image.filename, mediaType: image.mediaType, sizeBytes: image.sizeBytes }] : []) } : {}) };
 }
 
 export function formatResponseTime(milliseconds?: number) {
@@ -108,7 +112,8 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
   const legacyReview = message.role === "assistant" ? raw.match(/(?:^|\n)needs_review\s*=\s*(true|false)\b/i)?.[1].toLowerCase() : undefined;
   const review = result?.needs_review ?? (legacyReview === undefined ? undefined : legacyReview === "true");
   const legacyNote = message.role === "assistant" && !result ? raw.match(/(?:^|\n)Do sprawdzenia(?: przez pracownika)?\s*:[ \t]*([\s\S]*?)(?=\nneeds_review\s*=|$)/i)?.[1].trim() : undefined;
-  const note = legacyNote || (review ? "Wymagana weryfikacja przez pracownika." : "Brak");
+  const calendar = message.parts.some((part) => part.type === "data-generated-image" && part.data && typeof part.data === "object" && "renderer" in part.data && ["calendar-code", "calendar-hybrid"].includes(String(part.data.renderer)));
+  const note = legacyNote || (review ? calendar ? "Do doprecyzowania przez użytkownika; sprawdź uwagi kalendarza." : "Wymagana weryfikacja przez pracownika." : "Brak");
   let copy = review === undefined ? text : `${text}\nDo sprawdzenia: ${note}\nneeds_review = ${review}`;
   const actualModel = message.role === "assistant" ? messageResponseModel(message) : undefined;
   if (actualModel !== undefined) copy += `\nModel: ${actualModel ?? "dostawca nie potwierdził identyfikatora"}`;
@@ -120,6 +125,15 @@ function copyMessageText(message: Pick<UIMessage, "role" | "parts">, withJson: b
     const data = part.data as Record<string, unknown>;
     if ((data.provider !== "openrouter" && data.provider !== "google") || typeof data.draft !== "string") continue;
     copy += `\nOpis zdjęcia — ${data.provider === "google" ? "Gemini" : "OpenRouter"}: ${data.draft}\nModel: ${typeof data.modelId === "string" ? data.modelId : "dostawca nie potwierdził identyfikatora"}`;
+  }
+  for (const part of message.parts) {
+    if (part.type === "data-generated-image") { const details = calendarDetailsText(part.data); if (details) copy += `\nWydarzenia i uwagi:\n${details}`; }
+    if (part.type === "data-generated-image" && part.data && typeof part.data === "object" && "renderer" in part.data && part.data.renderer === "calendar-code") copy += "\nWykonanie: kod aplikacji — kalendarz. Wyróżniono weekendy; święta nie są oznaczone.";
+    if (part.type === "data-generated-image" && part.data && typeof part.data === "object" && "renderer" in part.data && part.data.renderer === "calendar-hybrid") copy += `\nWykonanie: ilustracja AI + daty i podpisy nałożone kodem.\nModel ilustracji: ${"modelId" in part.data && typeof part.data.modelId === "string" ? part.data.modelId : "dostawca nie potwierdził"}`;
+    if (part.type === "data-generated-image" && part.data && typeof part.data === "object" && "requestedBy" in part.data) {
+      const provider = part.data.requestedBy;
+      if (provider === "openrouter" || provider === "google") copy += `\nZlecił: MAX · ${provider === "google" ? "Gemini" : "OpenRouter"}`;
+    }
   }
   if (withJson && result) copy += `\nJSON:\n${JSON.stringify(result, null, 2)}`;
   const timing = withJson && message.role === "assistant" ? messageTiming(message) : undefined;
@@ -135,6 +149,24 @@ export function formatMessage(message: Pick<UIMessage, "role" | "parts">, assist
 }
 
 const escapeClipboardHtml = (text: string) => text.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+
+export function calendarDetailsText(value: unknown): string {
+  if (!value || typeof value !== "object" || !("calendarDetails" in value)) return "";
+  const details = value.calendarDetails;
+  if (!details || typeof details !== "object") return "";
+  const data = details as Record<string, unknown>, lines: string[] = [];
+  if (Array.isArray(data.events)) for (const event of data.events.slice(0, 200)) {
+    if (!event || typeof event !== "object" || typeof event.label !== "string" || typeof event.sourceDate !== "string") continue;
+    let text = `${event.sourceDate}: ${event.label}`;
+    if (typeof event.time === "string" && event.time) text += ` · ${event.time} ${typeof event.timeZone === "string" && event.timeZone ? event.timeZone : "BRAK STREFY"}`;
+    if (typeof event.warsawTime === "string") text += ` → Warszawa: ${event.warsawDate} ${event.warsawTime}`;
+    if (typeof event.conversionWarning === "string") text += ` · ${event.conversionWarning}`;
+    lines.push(text);
+  }
+  if (data.weatherRequested === true && typeof data.weatherDaysCount === "number") lines.push(`Pogoda (${typeof data.weatherCity === "string" ? data.weatherCity : "wybrana miejscowość"}): potwierdzone dane dla ${data.weatherDaysCount} dni; pozostałe oznaczono BRAK DANYCH.`);
+  if (Array.isArray(data.warnings)) for (const warning of data.warnings.slice(0, 200)) if (typeof warning === "string") lines.push(warning);
+  return lines.join("\n");
+}
 
 export function messageImageUrls(message: Pick<UIMessage, "parts">) {
   return [...new Set(message.parts.flatMap((part) => {

@@ -164,14 +164,95 @@ export function aktualnyCzas(deps: Dependencies = {}) {
   return { ok: true as const, date: `${value("year")}-${value("month")}-${value("day")}`, weekday: new Intl.DateTimeFormat("pl-PL", { timeZone: "Europe/Warsaw", weekday: "long" }).format(now), time: `${value("hour")}:${value("minute")}:${value("second")}.${value("fractionalSecond")}`, timezone: "Europe/Warsaw", fetchedAt: now.toISOString(), clockSource: "Zegar serwera w momencie wykonania narzędzia; milisekundy oznaczają precyzję zapisu, nie gwarantowaną dokładność synchronizacji." };
 }
 
+
+// Kalendarz informacyjny PL: weekendy + ogólnopolskie święta z publicznego API v4.
+export async function dniWolnePL(input: { from: string; to: string }, deps: Dependencies = {}) {
+  if (!input || typeof input.from !== "string" || typeof input.to !== "string") return failed("Podaj daty od/do w formacie RRRR-MM-DD.", deps);
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit" }).format(instant(deps));
+  const from = input.from || today, to = input.to || from;
+  if (!validDate(from) || !validDate(to)) return failed("Nieprawidłowa data. Użyj RRRR-MM-DD, np. 2026-12-25.", deps);
+  const count = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+  if (count < 1 || count > 62 || Number(from.slice(0, 4)) < 2000 || Number(to.slice(0, 4)) > 2100) return failed("Sprawdź kolejność dat. Jedno zapytanie może obejmować od 1 do 62 dni w latach 2000–2100.", deps);
+  try {
+    const holidays: { date: string; name: string }[] = [];
+    const sources = [];
+    for (let year = Number(from.slice(0, 4)); year <= Number(to.slice(0, 4)); year++) {
+      const url = `https://nagerholidays.com/api/v4/Holidays/PL/${year}`;
+      const response = await requestJson(url, deps);
+      if (!response.ok) return failed(`Nie udało się sprawdzić świąt w Nager.Holidays (HTTP ${response.status}). Spróbuj później; nie potwierdzono dni wolnych.`, deps);
+      if (!Array.isArray(response.data) || !response.data.length || response.data.length > 366) return failed("Nager.Holidays zwróciło nieprawidłowy kalendarz. Nie potwierdzono dni wolnych.", deps);
+      for (const item of response.data) {
+        const holiday = object(item);
+        if (typeof holiday.date !== "string" || !validDate(holiday.date) || !holiday.date.startsWith(`${year}-`) || holiday.countryCode !== "PL" || typeof holiday.name !== "string" || !holiday.name.trim() || holiday.name.length > 200 || typeof holiday.nationalHoliday !== "boolean" || !Array.isArray(holiday.holidayTypes) || !holiday.holidayTypes.every((type) => typeof type === "string")) return failed("Nager.Holidays zwróciło niekompletne dane. Nie potwierdzono dni wolnych.", deps);
+        if (holiday.nationalHoliday && holiday.holidayTypes.includes("Public")) holidays.push({ date: holiday.date, name: holiday.name });
+      }
+      sources.push({ url, title: `Nager.Holidays — święta w Polsce, ${year}`, fetchedAt: instant(deps).toISOString() });
+    }
+    const days = Array.from({ length: count }, (_, index) => {
+      const date = new Date(Date.parse(from) + index * 86400000);
+      const iso = date.toISOString().slice(0, 10);
+      const weekend = [0, 6].includes(date.getUTCDay());
+      const names = [...new Set(holidays.filter((holiday) => holiday.date === iso).map((holiday) => holiday.name))];
+      return { date: iso, weekday: new Intl.DateTimeFormat("pl-PL", { weekday: "long", timeZone: "UTC" }).format(date), weekend, publicHoliday: names.length > 0, holidayNames: names, dayOffCalendar: weekend || names.length > 0 };
+    });
+    return { ok: true as const, country: "PL", from, to, days, freeDaysCount: days.filter((day) => day.dayOffCalendar).length, workingDaysCount: days.filter((day) => !day.dayOffCalendar).length, sources, fetchedAt: instant(deps).toISOString(), note: "Kalendarz weekendów i świąt ogólnopolskich. Nie potwierdza dostępności konsultacji ani indywidualnego grafiku pracy. Nie wyznacza zastępczego dnia wolnego za święto w sobotę." };
+  } catch {
+    return failed("Kalendarz świąt jest chwilowo niedostępny lub zapytanie przerwano. Nie potwierdzono dni wolnych; spróbuj później.", deps);
+  }
+}
+
+
+type ZoneInput = { date: string; time: string; fromZone: string; toZone: string };
+// Odwrotne mapowanie czasu lokalnego: sprawdzamy możliwe offsety i każdą datę weryfikujemy w Intl.
+export function przeliczStrefyCzasowe(input: ZoneInput, deps: Dependencies = {}) {
+  if (!input || [input.date, input.time, input.fromZone, input.toZone].some((value) => typeof value !== "string")) return failed("Podaj datę, godzinę i obie strefy czasowe.", deps);
+  const date = input.date.trim(), time = input.time.trim();
+  if (!validDate(date) || Number(date.slice(0, 4)) < 2000 || Number(date.slice(0, 4)) > 2100 || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) return failed("Podaj poprawną datę RRRR-MM-DD (2000–2100) i godzinę GG:MM, np. 2026-11-20 16:00.", deps);
+  const fromZone = input.fromZone.trim() || "Europe/Warsaw", toZone = input.toZone.trim();
+  const namedZone = /^(?:UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+.-]+){1,3})$/;
+  if (!namedZone.test(fromZone) || !namedZone.test(toZone) || fromZone.length > 100 || toZone.length > 100) return failed("Podaj jednoznaczne strefy IANA, np. Europe/Warsaw, America/New_York lub UTC. Skróty typu CST nie wskazują jednoznacznie miejsca.", deps);
+  try {
+    const formatter = (zone: string) => new Intl.DateTimeFormat("en-GB", { timeZone: zone, calendar: "iso8601", numberingSystem: "latn", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+    const sourceFormatter = formatter(fromZone), targetFormatter = formatter(toZone);
+    const parts = (format: Intl.DateTimeFormat, instant: number) => Object.fromEntries(format.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+    const localAsUTC = (format: Intl.DateTimeFormat, instant: number) => {
+      const p = parts(format, instant);
+      return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+    };
+    const wall = Date.parse(`${date}T${time}:00Z`);
+    const offsets = new Set<number>();
+    // Bierzemy offsety po obu stronach potencjalnej zmiany czasu, również dla zmian o 30 min.
+    for (let hours = -48; hours <= 48; hours += 6) {
+      const sample = wall + hours * 3600000;
+      offsets.add(localAsUTC(sourceFormatter, sample) - sample);
+    }
+    const candidates = [...offsets].map((offset) => wall - offset).filter((instant) => localAsUTC(sourceFormatter, instant) === wall).sort((a, b) => a - b);
+    const offsetLabel = (milliseconds: number) => {
+      const minutes = Math.round(Math.abs(milliseconds) / 60000);
+      return `UTC${milliseconds < 0 ? "-" : "+"}${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+    };
+    if (!candidates.length) return { ...failed("Ta godzina nie istnieje w podanej strefie z powodu zmiany czasu. Podaj inną godzinę.", deps), code: "NONEXISTENT_LOCAL_TIME" };
+    if (candidates.length > 1) return { ...failed("Ta godzina występuje dwukrotnie podczas zmiany czasu. Doprecyzuj, o które wystąpienie chodzi, lub podaj jednoznaczny termin w UTC.", deps), code: "AMBIGUOUS_LOCAL_TIME", options: candidates.map((instant) => ({ utc: new Date(instant).toISOString(), utcOffset: offsetLabel(localAsUTC(sourceFormatter, instant) - instant) })) };
+    const instant = candidates[0];
+    const describe = (format: Intl.DateTimeFormat) => {
+      const p = parts(format, instant), timezone = format.resolvedOptions().timeZone;
+      return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}`, timezone, weekday: new Intl.DateTimeFormat("pl-PL", { timeZone: timezone, weekday: "long" }).format(new Date(instant)), utcOffset: offsetLabel(localAsUTC(format, instant) - instant) };
+    };
+    const source = describe(sourceFormatter), target = describe(targetFormatter);
+    return { ok: true as const, source, target, utc: new Date(instant).toISOString(), dayDifference: Math.round((Date.parse(target.date) - Date.parse(source.date)) / 86400000), dataSource: "Lokalna baza stref IANA środowiska serwera (Intl.DateTimeFormat)", calculatedAt: (deps.now?.() ?? new Date()).toISOString(), note: "Przeliczenie godziny, bez rezerwacji i bez potwierdzenia dostępności konsultacji. Uwzględnia reguły stref zapisane w środowisku serwera." };
+  } catch {
+    return failed("Nie rozpoznaję tej strefy czasowej. Podaj nazwę IANA, np. Europe/Warsaw lub America/New_York.", deps);
+  }
+}
+
 export type PublicToolName = "kursWalutyNBP" | "pogodaOpenMeteo" | "aktualnyCzas";
 function normalized(text: string) { return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ł/g, "l"); }
 export function requestedPublicTools(text: string): PublicToolName[] {
   const plain = normalized(text);
   const names: PublicToolName[] = [];
-  if (/kurs|notowan|przelicz|wymian/.test(plain) && (/walut|euro|dolar|frank|funt|jen|koron|hryw|forint|lira|lir[ey]|juan|yuan|zlot/.test(plain) || /\b(?:eur|usd|gbp|chf|jpy|czk|sek|nok|dkk|huf|uah|cny|aud|cad|nzd|try|ron|bgn|brl|inr|kwd|sar|aed|xdr)\b/.test(plain) || /\b[A-Z]{3}\b/.test(text))) names.push("kursWalutyNBP");
-  if (/pogod|prognoz|temperatur|bedzie padac|czy pada|opad|deszcz|snieg/.test(plain)) names.push("pogodaOpenMeteo");
-  if (/godzin|\bczas\b/.test(plain) && /doklad|milisek|\bms\b/.test(plain)) names.push("aktualnyCzas");
+  if (/kurs|notowan|przelicz|wymian/.test(plain) && (/walut|euro|dolar|frank|funt|jen|koron|hryw|forint|lira|lir[ey]|juan|yuan|zlot/.test(plain) || /\b(?:eur|usd|gbp|chf|jpy|czk|sek|nok|dkk|huf|uah|cny|aud|cad|nzd|try|ron|bgn|brl|inr|kwd|sar|aed|xdr)\b/.test(plain) || /\b[A-Z]{3}\b/.test(text) && /kurs|notowan|walut|wymian/.test(plain))) names.push("kursWalutyNBP");
+  if (/pogod|prognoz|temperatur|bedzie padac|czy pada|\bopad|deszcz|snieg/.test(plain)) names.push("pogodaOpenMeteo");
+  if (/dokladn\w*\s+(?:aktualn\w*\s+)?(?:godzin|czas)|(?:godzin|\bczas)\w*[^.!?\n]{0,30}(?:dokladnosc|milisek|\bms\b)|milisek|\bms\b/.test(plain)) names.push("aktualnyCzas");
   return names;
 }
 
@@ -188,7 +269,16 @@ export function createPublicTools(signal: AbortSignal, location?: WeatherLocatio
     const input = object(v); return Object.keys(input).length === 3 && typeof input.city === "string" && input.city.length <= 100 && Number.isInteger(input.startOffsetDays) && Number.isInteger(input.days) && Number(input.days) >= 1 && Number(input.days) <= 16 ? { success: true, value: input as WeatherInput } : { success: false, error: new Error("Nieprawidłowe parametry Open-Meteo.") };
   } });
   const emptySchema = jsonSchema<Record<string, never>>({ type: "object", properties: {}, additionalProperties: false }, { validate: (v) => v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0 ? { success: true, value: {} } : { success: false, error: new Error("Narzędzie czasu nie przyjmuje parametrów.") } });
+  const calendarSchema = jsonSchema<{ from: string; to: string }>({ type: "object", properties: { from: { type: "string", description: "Początek RRRR-MM-DD; pusty tekst oznacza dziś w Polsce." }, to: { type: "string", description: "Koniec RRRR-MM-DD włącznie; pusty tekst oznacza tylko datę from. Zakres do 62 dni." } }, required: ["from", "to"], additionalProperties: false }, { validate: (value) => {
+    const v = object(value); return Object.keys(v).length === 2 && typeof v.from === "string" && typeof v.to === "string" ? { success: true, value: v as { from: string; to: string } } : { success: false, error: new Error("Nieprawidłowe daty kalendarza.") };
+  } });
+  const zonesSchema = jsonSchema<ZoneInput>({ type: "object", properties: { date: { type: "string", description: "Data lokalna w strefie początkowej, RRRR-MM-DD." }, time: { type: "string", description: "Godzina lokalna GG:MM, bez zgadywania brakującej godziny." }, fromZone: { type: "string", description: "Strefa IANA źródła, np. Europe/Warsaw. Pusty tekst oznacza Europe/Warsaw." }, toZone: { type: "string", description: "Docelowa strefa IANA, np. America/New_York lub UTC; nie zgaduj miejsca klienta." } }, required: ["date", "time", "fromZone", "toZone"], additionalProperties: false }, { validate: (value) => {
+    const v = object(value), keys = ["date", "time", "fromZone", "toZone"];
+    return Object.keys(v).length === 4 && keys.every((key) => typeof v[key] === "string") ? { success: true, value: v as ZoneInput } : { success: false, error: new Error("Nieprawidłowe parametry stref czasowych.") };
+  } });
   return {
+    przeliczStrefyCzasowe: tool({ description: "Przelicz termin konsultacji lub inną datę i godzinę pomiędzy strefami czasowymi, np. Warszawa–Nowy Jork. Korzysta z lokalnej bazy IANA, uwzględnia zmianę daty i czasu letniego. Nie wykonuje rezerwacji, nie sprawdza dostępności i nie służy do walut ani zwykłego pytania o aktualną godzinę w Polsce. Gdy brak daty, godziny lub miejsca klienta, poproś o doprecyzowanie. Nie wybieraj sam wystąpienia godziny powtórzonej podczas zmiany czasu.", inputSchema: zonesSchema, execute: (input) => przeliczStrefyCzasowe(input) }),
+    dniWolnePL: tool({ description: "Sprawdź, czy wskazana data albo zakres do 62 dni to weekend lub ogólnopolskie święto w Polsce. Użyj przy pytaniach o dni wolne, święta, dni robocze lub dni tygodnia w konkretnym terminie. Pobiera kalendarz Nager.Holidays bez klucza; nie sprawdza kalendarza rezerwacji, urlopu, grafiku firmy ani świąt innych krajów. Nie używaj przy zwykłym pytaniu o cenę lub czas konsultacji, pogodę, kurs waluty ani na powitanie.", inputSchema: calendarSchema, execute: (input) => dniWolnePL(input, { signal }) }),
     kursWalutyNBP: tool({ description: "Pobierz prawdziwy średni kurs waluty względem PLN z publicznego API NBP. Używaj zawsze przy pytaniach o kurs i walutę, także dziś lub dla daty historycznej. Zwraca datę publikacji i pobrania; ostatnia tabela może pochodzić z dnia roboczego. Nie jest kursem kantoru ani prognozą. Przy porównaniu z bieżącym przekaż datę historyczną: jedno wykonanie zwróci oba kursy oraz obliczoną zmianę, więc nie potrzebujesz drugiego wywołania.", inputSchema: currencySchema, execute: async (input) => comparison ? await porownajKursWalutyNBP({ ...input, date: comparison.date ?? input.date }, { signal }) : await kursWalutyNBP(input, { signal }) }),
     pogodaOpenMeteo: tool({ description: "Pobierz bieżące warunki i prognozę z Open-Meteo. Używaj zawsze przy pytaniach o pogodę, dziś, jutro, za tydzień i na kilka dni. Bez miasta wywołaj z city='': narzędzie użyje lokalizacji przeglądarki, jeśli została udostępniona, albo poprosi o miejscowość. Nie zakładaj lokalizacji. Kod pogody to WMO, temperatura °C, opady mm.", inputSchema: weatherSchema, execute: (input) => pogodaOpenMeteo({ ...input, city: weatherCity ?? input.city }, { signal, location }) }),
     aktualnyCzas: tool({ description: "Pobierz świeżą datę, dzień tygodnia i godzinę zegara serwera w Europe/Warsaw z milisekundami. Używaj do DOKŁADNEJ godziny lub żądania precyzji ms. Proste pytania o godzinę, dziś, jutro i za ile dni nadal korzystają z czasu podanego w instrukcji requestu.", inputSchema: emptySchema, execute: () => aktualnyCzas() }),

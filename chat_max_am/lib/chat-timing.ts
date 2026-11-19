@@ -72,6 +72,8 @@ export type ChatRequestDiagnostics = {
   mode: "chat" | "analysis" | "duel";
   message: string;
   historyMessageCount: number;
+  requestPolicy?: { profile: "simple_chat" | "agent" | "analysis"; timeoutMs: number; structuredOutput: boolean; toolNames: string[] };
+  failure?: { providerHint?: "thought_signature" | "tool_schema" | "tool_choice" | "routing"; code: string; statusCode: number | null; finishReason: string | null; stage: "before_tool" | "after_tool"; requiredTools: string[]; message: string };
   images?: { filename: string; mediaType: string; sizeBytes: number }[];
   location: { latitude: number; longitude: number } | null;
   toolCalls: { attempt: number; step: number; name: string; input: Record<string, string | number | boolean | null>; effectiveInput: Record<string, string | number | boolean | null> }[];
