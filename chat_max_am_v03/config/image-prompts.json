@@ -1,0 +1,7 @@
+{
+  "prompts": [
+    { "label": "Logo MAX", "prompt": "Minimalistyczne logo MAX: czaszka wampira widziana z przodu, oba oczy widoczne, dwa kolory, czarne tło." },
+    { "label": "Post MAX", "prompt": "Kwadratowa grafika do posta MAX: neonowa czaszka, ciemne tło, limonkowe akcenty, miejsce na krótki nagłówek." },
+    { "label": "Baner Studio MAX", "prompt": "Baner Studio NovaMAX: minimalistyczna czaszka, elegancka typografia MAX, czarne tło i jasne kontrastowe detale." }
+  ]
+}

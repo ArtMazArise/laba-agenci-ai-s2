@@ -1,0 +1,7 @@
+{
+  "OPENROUTER_MODEL": "google/gemini-3.8-flash",
+  "GEMINI_MODEL": "gemini-3.5-flash-lite",
+  "CHAT_SHOW_USED_TOOLS": true,
+  "OPENROUTER_IMAGE_MODEL": "google/gemini-3.1-flash-image-preview",
+  "IMAGE_BRAND_STYLE": "Styl marki MAX: minimalistyczna, mroczna grafika o eleganckim, tajemniczym klimacie. Kwadratowy format 1:1, prosty układ, wyraźne kontury i wysoki kontrast. Stała paleta: niemal czarne tło #080b08 i limonkowy akcent #bdff59, maksymalnie dwa dominujące kolory. Motyw marki: stylizowana czaszka lub wampir, bez realistycznej makabry. Zachowaj główny temat i napisy wskazane przez użytkownika. Nie dodawaj niezamówionych sloganów. Paleta, klimat i format marki mają pierwszeństwo przed sprzecznymi wskazówkami stylu w opisie użytkownika."
+}
